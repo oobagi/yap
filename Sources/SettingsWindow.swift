@@ -12,10 +12,12 @@ class SettingsWindow: NSWindow {
     private var apiKeyField: NSTextField!
     private var modelField: NSTextField!
     private var hotkeyPopup: NSPopUpButton!
+    private var exampleBox: NSBox!
+    private var exampleLabel: NSTextField!
     
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 300),
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 520),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -35,8 +37,8 @@ class SettingsWindow: NSWindow {
         let padding: CGFloat = 20
         let labelWidth: CGFloat = 110
         let fieldX: CGFloat = padding + labelWidth + 8
-        let fieldWidth: CGFloat = 420 - fieldX - padding
-        var y: CGFloat = 250
+        let fieldWidth: CGFloat = 480 - fieldX - padding
+        var y: CGFloat = 470
         let rowHeight: CGFloat = 36
         
         // Hotkey
@@ -52,6 +54,8 @@ class SettingsWindow: NSWindow {
         for style in FormattingStyle.allCases {
             stylePopup.addItem(withTitle: style.label)
         }
+        stylePopup.target = self
+        stylePopup.action = #selector(styleChanged(_:))
         contentView.addSubview(stylePopup)
         y -= rowHeight
         
@@ -80,8 +84,26 @@ class SettingsWindow: NSWindow {
         contentView.addSubview(modelField)
         y -= rowHeight + 10
         
-        // Save button
-        let saveButton = NSButton(frame: NSRect(x: 420 - padding - 80, y: y, width: 80, height: 30))
+        // Example box
+        exampleBox = NSBox(frame: NSRect(x: padding, y: 60, width: 480 - padding * 2, height: y - 60))
+        exampleBox.title = "Example"
+        exampleBox.titlePosition = .atTop
+        exampleBox.contentViewMargins = NSSize(width: 10, height: 8)
+        contentView.addSubview(exampleBox)
+        
+        exampleLabel = NSTextField(wrappingLabelWithString: "")
+        exampleLabel.font = .systemFont(ofSize: 11.5)
+        exampleLabel.textColor = .secondaryLabelColor
+        exampleLabel.isSelectable = true
+        exampleLabel.frame = NSRect(x: 0, y: 0, width: exampleBox.frame.width - 30, height: exampleBox.frame.height - 30)
+        exampleBox.contentView?.addSubview(exampleLabel)
+        
+        updateExample()
+        
+        // Buttons
+        let buttonY: CGFloat = 18
+        
+        let saveButton = NSButton(frame: NSRect(x: 480 - padding - 80, y: buttonY, width: 80, height: 30))
         saveButton.title = "Save"
         saveButton.bezelStyle = .rounded
         saveButton.keyEquivalent = "\r"
@@ -89,8 +111,7 @@ class SettingsWindow: NSWindow {
         saveButton.action = #selector(save(_:))
         contentView.addSubview(saveButton)
         
-        // Cancel button
-        let cancelButton = NSButton(frame: NSRect(x: 420 - padding - 170, y: y, width: 80, height: 30))
+        let cancelButton = NSButton(frame: NSRect(x: 480 - padding - 170, y: buttonY, width: 80, height: 30))
         cancelButton.title = "Cancel"
         cancelButton.bezelStyle = .rounded
         cancelButton.keyEquivalent = "\u{1b}"
@@ -105,6 +126,47 @@ class SettingsWindow: NSWindow {
         label.alignment = .right
         label.font = .systemFont(ofSize: 13)
         view.addSubview(label)
+    }
+    
+    private func updateExample() {
+        let selectedIndex = stylePopup?.indexOfSelectedItem ?? 0
+        let style = FormattingStyle.allCases[selectedIndex]
+        
+        var lines = "Someone says:\n"
+        lines += "\"\(FormattingStyle.exampleInput)\"\n\n"
+        
+        for mode in FormattingStyle.allCases {
+            let marker = mode == style ? "→" : "  "
+            let bold = mode == style
+            lines += "\(marker) \(mode.label): \(mode.description)\n"
+            lines += "    \"\(mode.exampleOutput)\"\n\n"
+        }
+        
+        let attributed = NSMutableAttributedString(string: lines)
+        let fullRange = NSRange(location: 0, length: attributed.length)
+        attributed.addAttribute(.font, value: NSFont.systemFont(ofSize: 11), range: fullRange)
+        attributed.addAttribute(.foregroundColor, value: NSColor.secondaryLabelColor, range: fullRange)
+        
+        // Bold the selected mode's line
+        let selectedHeader = "\(style.label): \(style.description)"
+        if let range = lines.range(of: selectedHeader) {
+            let nsRange = NSRange(range, in: lines)
+            attributed.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: 11), range: nsRange)
+            attributed.addAttribute(.foregroundColor, value: NSColor.labelColor, range: nsRange)
+        }
+        
+        // Bold the arrow
+        if let range = lines.range(of: "→") {
+            let nsRange = NSRange(range, in: lines)
+            attributed.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: nsRange)
+            attributed.addAttribute(.font, value: NSFont.boldSystemFont(ofSize: 11), range: nsRange)
+        }
+        
+        exampleLabel.attributedStringValue = attributed
+    }
+    
+    @objc private func styleChanged(_ sender: NSPopUpButton) {
+        updateExample()
     }
     
     // MARK: - Load / Save
@@ -131,6 +193,8 @@ class SettingsWindow: NSWindow {
         
         apiKeyField.stringValue = formatting["api_key"] as? String ?? ""
         modelField.stringValue = formatting["model"] as? String ?? ""
+        
+        updateExample()
     }
     
     @objc private func save(_ sender: Any) {
@@ -138,7 +202,7 @@ class SettingsWindow: NSWindow {
         let style = FormattingStyle.allCases[stylePopup.indexOfSelectedItem]
         let provider = APIProvider.allCases[providerPopup.indexOfSelectedItem]
         
-        var config: [String: Any] = [
+        let config: [String: Any] = [
             "hotkey": hotkey,
             "formatting": [
                 "style": style.rawValue,

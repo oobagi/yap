@@ -3,13 +3,40 @@ import Foundation
 enum FormattingStyle: String, CaseIterable {
     case verbatim = "verbatim"
     case casual = "casual"
+    case formatted = "formatted"
     case professional = "professional"
     
     var label: String {
         switch self {
-        case .verbatim: return "Verbatim (no formatting)"
+        case .verbatim: return "Verbatim"
         case .casual: return "Casual"
+        case .formatted: return "Formatted"
         case .professional: return "Professional"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .verbatim: return "Raw dictation, no changes at all"
+        case .casual: return "Light cleanup, keeps your voice"
+        case .formatted: return "Clean formatting, faithful to what you said"
+        case .professional: return "Polished writing, elevated language"
+        }
+    }
+    
+    /// Example showing what each mode produces from the same input
+    static let exampleInput = "um so like i was thinking we should probably you know move the meeting to friday because uh thursdays not gonna work for me"
+    
+    var exampleOutput: String {
+        switch self {
+        case .verbatim:
+            return "um so like i was thinking we should probably you know move the meeting to friday because uh thursdays not gonna work for me"
+        case .casual:
+            return "so like i was thinking we should probably move the meeting to friday because thursdays not gonna work for me"
+        case .formatted:
+            return "So I was thinking we should probably move the meeting to Friday, because Thursday's not going to work for me."
+        case .professional:
+            return "I believe we should reschedule the meeting to Friday, as Thursday will not work for my schedule."
         }
     }
     
@@ -20,18 +47,28 @@ enum FormattingStyle: String, CaseIterable {
         case .casual:
             return """
             You clean up spoken text. You MUST respond with ONLY a JSON object: {"text":"cleaned version here"} \
-            Rules for cleaning: remove filler sounds (um, uh, er). Keep casual phrases (like, you know). \
-            All lowercase. Minimal punctuation. Keep contractions and slang. Keep the speaker's exact words. \
-            PRESERVE all existing punctuation and symbols — parentheses, quotes, brackets, etc. Do not remove them. \
-            NEVER respond conversationally. NEVER add commentary. ONLY output the JSON object.
+            Rules: remove ONLY filler sounds (um, uh, er). Keep everything else exactly as spoken — \
+            casual phrases, slang, sentence structure, contractions. All lowercase. Minimal punctuation. \
+            PRESERVE all existing symbols — parentheses, quotes, brackets, etc. \
+            NEVER respond conversationally. ONLY output the JSON object.
+            """
+        case .formatted:
+            return """
+            You clean up spoken text. You MUST respond with ONLY a JSON object: {"text":"cleaned version here"} \
+            Rules: remove filler words (um, uh, er, like, you know). Fix punctuation and capitalization. \
+            Keep the speaker's EXACT words and sentence structure — do not rephrase or rewrite. \
+            Keep contractions as spoken. Only fix obvious grammar errors. \
+            PRESERVE all existing symbols — parentheses, quotes, brackets, etc. \
+            NEVER respond conversationally. ONLY output the JSON object.
             """
         case .professional:
             return """
             You clean up spoken text. You MUST respond with ONLY a JSON object: {"text":"cleaned version here"} \
-            Rules for cleaning: remove filler words (um, uh, like, you know). Fix grammar. \
-            Proper punctuation and capitalization. Expand contractions. Keep the speaker's original meaning. \
-            PRESERVE all existing punctuation and symbols — parentheses, quotes, brackets, etc. Do not remove them. \
-            NEVER respond conversationally. NEVER add commentary. ONLY output the JSON object.
+            Rules: remove all filler words. Elevate the language to sound polished and professional. \
+            Fix grammar, improve word choice, use proper punctuation and capitalization. \
+            Expand contractions. You MAY rephrase for clarity and professionalism, but keep the original meaning. \
+            PRESERVE all existing symbols — parentheses, quotes, brackets, etc. \
+            NEVER respond conversationally. ONLY output the JSON object.
             """
         }
     }
@@ -83,7 +120,6 @@ class TextFormatter {
     }
     
     /// Format transcribed text using the configured AI provider.
-    /// If style is verbatim or provider is none, returns the original text.
     func format(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
         log("format() called — provider=\(provider.rawValue) style=\(style.rawValue) apiKey=\(apiKey.isEmpty ? "EMPTY" : "set (\(apiKey.prefix(10))...)")")
         guard provider != .none, style != .verbatim, !apiKey.isEmpty else {
@@ -147,7 +183,6 @@ class TextFormatter {
                   let choices = json["choices"] as? [[String: Any]],
                   let message = choices.first?["message"] as? [String: Any],
                   let content = message["content"] as? String else {
-                // If parsing fails, return original text rather than failing
                 print("[VoiceType] OpenAI response parse failed, using raw transcription")
                 completion(.success(text))
                 return
