@@ -40,8 +40,8 @@ class AudioRecorder {
                 sum += channelData[i] * channelData[i]
             }
             let rms = sqrtf(sum / Float(max(frames, 1)))
-            // Normalize to 0-1 range (typical mic RMS is 0-0.5)
-            let level = min(rms * 3.0, 1.0)
+            // Normalize to 0-1 range with aggressive scaling for visible reactivity
+            let level = min(rms * 5.0, 1.0)
             
             DispatchQueue.main.async {
                 self?.onLevelUpdate?(level)

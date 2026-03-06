@@ -104,8 +104,8 @@ struct OverlayView: View {
         .frame(height: 40)
         .background(
             VisualEffectBackground()
-                .clipShape(Capsule())
         )
+        .clipShape(Capsule())
         .shadow(color: .black.opacity(0.2), radius: 8, y: 2)
     }
 }
@@ -133,15 +133,18 @@ struct WaveformBar: View {
     private var barHeight: CGFloat {
         let center = CGFloat(total - 1) / 2.0
         let distFromCenter = abs(CGFloat(index) - center) / center
-        let positionScale = 1.0 - (distFromCenter * 0.4)
+        let positionScale = 1.0 - (distFromCenter * 0.5)
         
-        let minHeight: CGFloat = 4
-        let maxHeight: CGFloat = 20
-        let targetHeight = minHeight + (maxHeight - minHeight) * level * positionScale
+        let minHeight: CGFloat = 3
+        let maxHeight: CGFloat = 24
         
-        // Add slight random variation per bar
-        let seed = sin(Double(index) * 1.8 + Double(level) * 5.0)
-        let variation = CGFloat(seed) * 2.0
+        // Apply curve to make level changes more dramatic
+        let boosted = pow(level, 0.5) // square root makes quiet sounds more visible
+        let targetHeight = minHeight + (maxHeight - minHeight) * boosted * positionScale
+        
+        // Add variation per bar so they don't all move identically
+        let seed = sin(Double(index) * 2.5 + Double(level) * 8.0)
+        let variation = CGFloat(seed) * 3.5 * boosted
         
         return max(minHeight, min(maxHeight, targetHeight + variation))
     }
