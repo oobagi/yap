@@ -58,7 +58,8 @@ class OverlayPanel: NSPanel {
     
     func showProcessing() {
         overlayState.mode = .processing
-        overlayState.audioLevel = 0
+        // Don't zero audioLevel — let bars hold their last position
+        // so the transition into the pulse animation is seamless
     }
     
     func showError(_ message: String) {
@@ -115,12 +116,9 @@ struct OverlayView: View {
     @ViewBuilder
     private var pillContent: some View {
         switch state.mode {
-        case .recording:
-            WaveformBars(level: CGFloat(state.audioLevel))
-                .frame(width: 40, height: 24)
-        case .processing:
-            WaveLoadingAnimation()
-                .frame(width: 40, height: 24)
+        case .recording, .processing:
+            WaveformBars(level: CGFloat(state.audioLevel), isProcessing: state.mode == .processing)
+                .frame(width: 56, height: 24)
         case .error(let message):
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -137,53 +135,48 @@ struct OverlayView: View {
     }
 }
 
-struct WaveLoadingAnimation: View {
+struct WaveformBars: View {
+    var level: CGFloat
+    var isProcessing: Bool
     let barCount = 7
     
+    @State private var pulseStrength: CGFloat = 0
+    
     var body: some View {
-        TimelineView(.animation) { timeline in
-            // Pulse position sweeps 0 → barCount-1, repeating every 0.8s
-            let t = timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 0.8) / 0.8
+        TimelineView(.animation(paused: !isProcessing)) { timeline in
+            let phase = isProcessing ? timeline.date.timeIntervalSinceReferenceDate : 0
+            let t = phase.truncatingRemainder(dividingBy: 0.8) / 0.8
             let pulseCenter = t * Double(barCount - 1)
             
             HStack(spacing: 3) {
                 ForEach(0..<barCount, id: \.self) { index in
+                    let audioH = audioBarHeight(index: index)
+                    
+                    // Pulse: gaussian bump that sweeps left → right
                     let distance = abs(Double(index) - pulseCenter)
-                    // Narrow gaussian pulse — only ~1-2 bars raised at a time
                     let pulse = exp(-distance * distance / 0.6)
-                    let minH: CGFloat = 4
-                    let maxH: CGFloat = 22
-                    let barHeight = minH + (maxH - minH) * CGFloat(pulse)
+                    let pulseH = 18.0 * CGFloat(pulse) * pulseStrength
+                    
+                    let minH: CGFloat = 3
+                    let maxH: CGFloat = 24
+                    let barHeight = min(maxH, max(minH, audioH + pulseH))
                     
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color.white.opacity(0.9))
                         .frame(width: 4, height: barHeight)
+                        .animation(.easeOut(duration: 0.08), value: level)
                 }
             }
         }
-    }
-}
-
-struct WaveformBars: View {
-    var level: CGFloat
-    let barCount = 5
-    
-    var body: some View {
-        HStack(spacing: 3) {
-            ForEach(0..<barCount, id: \.self) { index in
-                WaveformBar(level: level, index: index, total: barCount)
+        .onChange(of: isProcessing) { processing in
+            withAnimation(.easeInOut(duration: 0.4)) {
+                pulseStrength = processing ? 1 : 0
             }
         }
     }
-}
-
-struct WaveformBar: View {
-    var level: CGFloat
-    var index: Int
-    var total: Int
     
-    private var barHeight: CGFloat {
-        let center = CGFloat(total - 1) / 2.0
+    private func audioBarHeight(index: Int) -> CGFloat {
+        let center = CGFloat(barCount - 1) / 2.0
         let distFromCenter = abs(CGFloat(index) - center) / center
         let positionScale = 1.0 - (distFromCenter * 0.5)
         
@@ -197,12 +190,5 @@ struct WaveformBar: View {
         let variation = CGFloat(seed) * 3.5 * boosted
         
         return max(minHeight, min(maxHeight, targetHeight + variation))
-    }
-    
-    var body: some View {
-        RoundedRectangle(cornerRadius: 2)
-            .fill(Color.white.opacity(0.9))
-            .frame(width: 4, height: barHeight)
-            .animation(.easeOut(duration: 0.08), value: level)
     }
 }
