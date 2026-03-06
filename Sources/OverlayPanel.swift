@@ -116,7 +116,7 @@ struct OverlayView: View {
         switch state.mode {
         case .recording, .processing:
             WaveformBars(level: CGFloat(state.audioLevel), isProcessing: state.mode == .processing)
-                .frame(width: 56, height: 24)
+                .frame(width: 52, height: 28)
         case .error(let message):
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -136,7 +136,7 @@ struct OverlayView: View {
 struct WaveformBars: View {
     var level: CGFloat
     var isProcessing: Bool
-    let barCount = 7
+    let barCount = 11
     
     var body: some View {
         if isProcessing {
@@ -153,10 +153,10 @@ struct AudioReactiveBars: View {
     let barCount: Int
     
     // Per-bar scale offsets to break symmetry — each bar has a unique personality
-    private let barScales: [CGFloat] = [0.35, 0.55, 0.78, 1.0, 0.85, 0.62, 0.4]
+    private let barScales: [CGFloat] = [0.2, 0.35, 0.5, 0.68, 0.85, 1.0, 0.9, 0.72, 0.55, 0.38, 0.22]
     
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: 2) {
             ForEach(0..<barCount, id: \.self) { index in
                 let scale = barScales[index]
                 
@@ -173,9 +173,9 @@ struct AudioReactiveBars: View {
                 let variation = CGFloat(seed) * 2.0 * boosted
                 let barHeight = max(minH, min(barCeiling, targetHeight + variation))
                 
-                RoundedRectangle(cornerRadius: 2)
+                RoundedRectangle(cornerRadius: 1.5)
                     .fill(Color.white.opacity(0.9))
-                    .frame(width: 4, height: barHeight)
+                    .frame(width: 3, height: barHeight)
                     .animation(.easeOut(duration: 0.12), value: level)
             }
         }
@@ -199,25 +199,25 @@ struct WaveAnimationBars: View {
             let t = elapsed.truncatingRemainder(dividingBy: 1.0) / 1.0
             let waveCenter = -2.0 + t * sweepRange
             
-            HStack(spacing: 3) {
+            HStack(spacing: 2) {
                 ForEach(0..<barCount, id: \.self) { index in
                     // Audio-reactive base (decaying via displayLevel)
                     let center = CGFloat(barCount - 1) / 2.0
                     let distFromCenter = abs(CGFloat(index) - center) / center
                     let positionScale = 1.0 - (distFromCenter * 0.5)
                     let boosted = pow(lastLevel * displayLevel, 0.5)
-                    let audioH = max(6.0, min(24.0, 6.0 + 18.0 * boosted * positionScale))
+                    let audioH = max(6.0, min(28.0, 6.0 + 22.0 * boosted * positionScale))
                     
                     // Wave overlay
                     let distance = abs(Double(index) - waveCenter)
                     let wave = exp(-distance * distance / 1.5)
-                    let waveH = 18.0 * CGFloat(wave) * waveStrength
+                    let waveH = 22.0 * CGFloat(wave) * waveStrength
                     
-                    let barHeight = min(24.0, max(6.0, audioH + waveH))
+                    let barHeight = min(28.0, max(6.0, audioH + waveH))
                     
-                    RoundedRectangle(cornerRadius: 2)
+                    RoundedRectangle(cornerRadius: 1.5)
                         .fill(Color.white.opacity(0.9))
-                        .frame(width: 4, height: barHeight)
+                        .frame(width: 3, height: barHeight)
                 }
             }
         }
