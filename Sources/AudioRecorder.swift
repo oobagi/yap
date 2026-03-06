@@ -141,13 +141,25 @@ class AudioRecorder {
             }
         }
         
-        // Normalize relative to the loudest band so they spread across the full range
+        // Get relative distribution (which bands are active vs others)
         let peak = bands.max() ?? 1
         if peak > 0 {
             for i in 0..<rawBandCount {
-                // Square root scaling for perceptual balance
-                bands[i] = sqrt(bands[i] / peak)
+                bands[i] = bands[i] / peak
             }
+        }
+        
+        // Compute overall RMS to use as a volume gate
+        var rmsSum: Float = 0
+        let count = min(frameCount, fftSize)
+        for i in 0..<count { rmsSum += channelData[i] * channelData[i] }
+        let rms = sqrtf(rmsSum / Float(max(count, 1)))
+        // Aggressive scaling — normal speech should hit 0.6-0.9
+        let volume = min(pow(rms * 18.0, 0.6), 1.0)
+        
+        // Multiply each band by volume — silence = all zero, speech = distributed
+        for i in 0..<rawBandCount {
+            bands[i] = bands[i] * volume
         }
         
         return bands

@@ -158,8 +158,8 @@ struct AudioReactiveBars: View {
     var bandLevels: [Float]
     let barCount: Int
     
-    // Position scaling — center bars reach full height, edges shorter
-    private let positionScale: [CGFloat] = [0.35, 0.48, 0.64, 0.8, 0.93, 1.0, 0.95, 0.82, 0.66, 0.5, 0.38]
+    // Position scaling — dramatic center emphasis, relaxed edges
+    private let positionScale: [CGFloat] = [0.2, 0.35, 0.55, 0.75, 0.92, 1.0, 0.94, 0.78, 0.58, 0.38, 0.22]
     
     var body: some View {
         HStack(spacing: 2) {
@@ -169,9 +169,12 @@ struct AudioReactiveBars: View {
                 
                 let minH: CGFloat = 5
                 let maxH: CGFloat = 28
+                // Center bars can reach full max, edges capped much lower
                 let barCeiling = minH + (maxH - minH) * scale
                 
-                let barHeight = max(minH, min(barCeiling, minH + (barCeiling - minH) * bandLevel))
+                // Power curve so bars spring up dramatically
+                let driven = pow(bandLevel, 0.7)
+                let barHeight = max(minH, min(barCeiling, minH + (barCeiling - minH) * driven))
                 
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(Color.white.opacity(0.9))
