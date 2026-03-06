@@ -107,6 +107,7 @@ struct OverlayView: View {
                             .fill(.ultraThinMaterial)
                             .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
                     )
+                    .animation(.easeInOut(duration: 0.3), value: state.mode)
             }
         }
     }
@@ -114,12 +115,14 @@ struct OverlayView: View {
     @ViewBuilder
     private var pillContent: some View {
         switch state.mode {
-        case .recording, .processing:
-            UnifiedWaveformBars(
-                level: CGFloat(state.audioLevel),
-                isProcessing: state.mode == .processing
-            )
-            .frame(width: 40, height: 24)
+        case .recording:
+            WaveformBars(level: CGFloat(state.audioLevel))
+                .frame(width: 40, height: 24)
+                .transition(.opacity.animation(.easeInOut(duration: 0.3)))
+        case .processing:
+            WaveLoadingAnimation()
+                .frame(width: 40, height: 24)
+                .transition(.opacity.animation(.easeInOut(duration: 0.3)))
         case .error(let message):
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -136,13 +139,8 @@ struct OverlayView: View {
     }
 }
 
-struct UnifiedWaveformBars: View {
-    var level: CGFloat
-    var isProcessing: Bool
+struct WaveLoadingAnimation: View {
     let barCount = 5
-    
-    // Tracks how much we've blended into the wave animation (0 = audio-reactive, 1 = full wave)
-    @State private var waveBlend: CGFloat = 0
     
     var body: some View {
         TimelineView(.animation) { timeline in
@@ -150,9 +148,12 @@ struct UnifiedWaveformBars: View {
             
             HStack(spacing: 3) {
                 ForEach(0..<barCount, id: \.self) { index in
-                    let audioHeight = audioBarHeight(index: index)
-                    let waveHeight = waveBarHeight(phase: phase, index: index)
-                    let barHeight = audioHeight + (waveHeight - audioHeight) * waveBlend
+                    let waveOffset = Double(index) / Double(barCount) * .pi * 2
+                    let wave = sin(phase - waveOffset)
+                    let normalized = (wave + 1) / 2
+                    let minH: CGFloat = 4
+                    let maxH: CGFloat = 22
+                    let barHeight = minH + (maxH - minH) * CGFloat(normalized)
                     
                     RoundedRectangle(cornerRadius: 2)
                         .fill(Color.white.opacity(0.9))
@@ -160,22 +161,29 @@ struct UnifiedWaveformBars: View {
                 }
             }
         }
-        .onChange(of: isProcessing) { processing in
-            if processing {
-                withAnimation(.easeInOut(duration: 0.4)) {
-                    waveBlend = 1
-                }
-            } else {
-                withAnimation(.easeOut(duration: 0.15)) {
-                    waveBlend = 0
-                }
+    }
+}
+
+struct WaveformBars: View {
+    var level: CGFloat
+    let barCount = 5
+    
+    var body: some View {
+        HStack(spacing: 3) {
+            ForEach(0..<barCount, id: \.self) { index in
+                WaveformBar(level: level, index: index, total: barCount)
             }
         }
     }
+}
+
+struct WaveformBar: View {
+    var level: CGFloat
+    var index: Int
+    var total: Int
     
-    // Audio-reactive bar height (same logic as the old WaveformBar)
-    private func audioBarHeight(index: Int) -> CGFloat {
-        let center = CGFloat(barCount - 1) / 2.0
+    private var barHeight: CGFloat {
+        let center = CGFloat(total - 1) / 2.0
         let distFromCenter = abs(CGFloat(index) - center) / center
         let positionScale = 1.0 - (distFromCenter * 0.5)
         
@@ -191,13 +199,10 @@ struct UnifiedWaveformBars: View {
         return max(minHeight, min(maxHeight, targetHeight + variation))
     }
     
-    // Sine wave bar height (same logic as the old WaveLoadingAnimation)
-    private func waveBarHeight(phase: Double, index: Int) -> CGFloat {
-        let waveOffset = Double(index) / Double(barCount) * .pi * 2
-        let wave = sin(phase - waveOffset)
-        let normalized = (wave + 1) / 2
-        let minH: CGFloat = 4
-        let maxH: CGFloat = 22
-        return minH + (maxH - minH) * CGFloat(normalized)
+    var body: some View {
+        RoundedRectangle(cornerRadius: 2)
+            .fill(Color.white.opacity(0.9))
+            .frame(width: 4, height: barHeight)
+            .animation(.easeOut(duration: 0.08), value: level)
     }
 }
