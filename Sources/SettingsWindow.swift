@@ -83,7 +83,7 @@ struct SettingsView: View {
                         TextField("API Key", text: $txApiKey)
                             .textFieldStyle(.roundedBorder)
                         
-                        TextField("Model (blank = \(selectedTxProvider.defaultModel))", text: $txModel)
+                        TextField(selectedTxProvider.defaultModel, text: $txModel)
                             .textFieldStyle(.roundedBorder)
                     }
                 } header: {
@@ -113,7 +113,7 @@ struct SettingsView: View {
                                 .textFieldStyle(.roundedBorder)
                         }
                         
-                        TextField("Model (blank = \(selectedFmtProvider.defaultModel))", text: $fmtModel)
+                        TextField(selectedFmtProvider.defaultModel, text: $fmtModel)
                             .textFieldStyle(.roundedBorder)
                         
                         Picker("Style", selection: $fmtStyle) {
