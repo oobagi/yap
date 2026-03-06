@@ -10,12 +10,13 @@ class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
     
     init() {
-        let width: CGFloat = 120
-        let height: CGFloat = 40
+        // Make window larger than the pill — extra padding absorbs any window chrome
+        let width: CGFloat = 160
+        let height: CGFloat = 80
         
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let x = screenFrame.midX - width / 2
-        let y = screenFrame.minY + 80
+        let y = screenFrame.minY + 60
         
         super.init(
             contentRect: NSRect(x: x, y: y, width: width, height: height),
@@ -27,18 +28,17 @@ class OverlayPanel: NSPanel {
         level = .floating
         isOpaque = false
         backgroundColor = .clear
-        hasShadow = true
+        hasShadow = false // no window-level shadow, SwiftUI handles it
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
+        ignoresMouseEvents = true // clicks pass through entirely
         
-        let hostingView = NSHostingView(rootView: OverlayView(state: overlayState))
-        hostingView.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        hostingView.wantsLayer = true
-        hostingView.layer?.backgroundColor = .clear
+        let hostingView = NSHostingView(rootView:
+            OverlayView(state: overlayState)
+                .frame(width: width, height: height)
+        )
         contentView = hostingView
-        contentView?.wantsLayer = true
-        contentView?.layer?.backgroundColor = .clear
     }
     
     func showRecording() {
@@ -90,6 +90,22 @@ struct OverlayView: View {
     @ObservedObject var state: OverlayState
     
     var body: some View {
+        Group {
+            if state.mode != .idle {
+                pillContent
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(
+                        Capsule()
+                            .fill(.ultraThinMaterial)
+                            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+                    )
+            }
+        }
+    }
+    
+    @ViewBuilder
+    private var pillContent: some View {
         HStack(spacing: 6) {
             switch state.mode {
             case .idle:
@@ -97,19 +113,12 @@ struct OverlayView: View {
             case .recording:
                 WaveformBars(level: CGFloat(state.audioLevel))
             case .processing:
-                WaveformBars(level: 0.05) // static low bars
+                WaveformBars(level: 0.05)
                 ProgressView()
                     .scaleEffect(0.5)
                     .frame(width: 14, height: 14)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .frame(height: 40)
-        .background(.ultraThinMaterial, in: Capsule())
-        .compositingGroup()
-        .shadow(color: .black.opacity(0.3), radius: 10, y: 3)
-        .background(Color.clear)
     }
 }
 
@@ -131,8 +140,6 @@ struct WaveformBar: View {
     var index: Int
     var total: Int
     
-    // Each bar gets a slightly different height based on its position
-    // Center bars are taller, edge bars shorter (like a real waveform)
     private var barHeight: CGFloat {
         let center = CGFloat(total - 1) / 2.0
         let distFromCenter = abs(CGFloat(index) - center) / center
@@ -141,11 +148,9 @@ struct WaveformBar: View {
         let minHeight: CGFloat = 3
         let maxHeight: CGFloat = 24
         
-        // Apply curve to make level changes more dramatic
-        let boosted = pow(level, 0.5) // square root makes quiet sounds more visible
+        let boosted = pow(level, 0.5)
         let targetHeight = minHeight + (maxHeight - minHeight) * boosted * positionScale
         
-        // Add variation per bar so they don't all move identically
         let seed = sin(Double(index) * 2.5 + Double(level) * 8.0)
         let variation = CGFloat(seed) * 3.5 * boosted
         
@@ -159,5 +164,3 @@ struct WaveformBar: View {
             .animation(.easeOut(duration: 0.08), value: level)
     }
 }
-
-
