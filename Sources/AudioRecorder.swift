@@ -166,24 +166,22 @@ class AudioRecorder {
     }
     
     /// Mirror 6 raw bands into 11 display bars: center = band 0 (strongest), fanning out
-    /// Left and right sides get slightly different blends to avoid perfect symmetry
+    /// Outer bars blend in more of the neighboring bands so they're not starved
     private func mirrorBands(_ raw: [Float]) -> [Float] {
         guard raw.count >= 6 else { return Array(repeating: 0, count: 11) }
-        // Center bar = band 0 (lowest freq, most voice energy)
-        // Fanning out: band 1, 2, 3, 4, 5
-        // Left side gets slight blend offset for natural asymmetry
+        // Outer bars get heavy blending from adjacent (more energetic) bands
         return [
-            raw[5] * 0.9 + raw[4] * 0.1,   // bar 0  (leftmost)
-            raw[4] * 0.85 + raw[5] * 0.15,  // bar 1
-            raw[3] * 0.9 + raw[4] * 0.1,    // bar 2
-            raw[2] * 0.85 + raw[3] * 0.15,  // bar 3
-            raw[1] * 0.9 + raw[2] * 0.1,    // bar 4
-            raw[0],                           // bar 5  (center)
-            raw[1] * 0.95 + raw[0] * 0.05,  // bar 6
-            raw[2] * 0.9 + raw[1] * 0.1,    // bar 7
-            raw[3] * 0.95 + raw[2] * 0.05,  // bar 8
-            raw[4] * 0.9 + raw[3] * 0.1,    // bar 9
-            raw[5] * 0.95 + raw[4] * 0.05,  // bar 10 (rightmost)
+            raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2,  // bar 0  (leftmost)
+            raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2,  // bar 1
+            raw[3] * 0.6 + raw[2] * 0.25 + raw[4] * 0.15, // bar 2
+            raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1,   // bar 3
+            raw[1] * 0.8 + raw[0] * 0.15 + raw[2] * 0.05, // bar 4
+            raw[0],                                          // bar 5  (center)
+            raw[1] * 0.85 + raw[0] * 0.1 + raw[2] * 0.05, // bar 6
+            raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1,   // bar 7
+            raw[3] * 0.6 + raw[2] * 0.25 + raw[4] * 0.15, // bar 8
+            raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2,   // bar 9
+            raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2,   // bar 10 (rightmost)
         ]
     }
 }

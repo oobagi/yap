@@ -158,8 +158,8 @@ struct AudioReactiveBars: View {
     var bandLevels: [Float]
     let barCount: Int
     
-    // Position scaling — dramatic center emphasis, relaxed edges
-    private let positionScale: [CGFloat] = [0.2, 0.35, 0.55, 0.75, 0.92, 1.0, 0.94, 0.78, 0.58, 0.38, 0.22]
+    // Position scaling — center emphasis but edges still visible
+    private let positionScale: [CGFloat] = [0.35, 0.45, 0.6, 0.78, 0.92, 1.0, 0.94, 0.8, 0.63, 0.48, 0.38]
     
     var body: some View {
         HStack(spacing: 2) {
