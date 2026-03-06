@@ -54,6 +54,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         requestPermissions()
         setupHotkey()
         setupEngines()
+        overlayPanel.orderFront(nil)
         log("Setup complete — ready")
     }
     
@@ -267,7 +268,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 sound?.play()
             }
             chimeWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: workItem)
         } catch {
             log("Recording failed: \(error)")
             state = .idle

@@ -10,12 +10,12 @@ class OverlayPanel: NSPanel {
     override var canBecomeMain: Bool { false }
     
     init() {
-        let width: CGFloat = 320
-        let height: CGFloat = 80
-        
+        let width: CGFloat = 1400
+        let height: CGFloat = 700
+
         let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let x = screenFrame.midX - width / 2
-        let y = screenFrame.minY + 60
+        let y = screenFrame.minY + 330 - height
         
         super.init(
             contentRect: NSRect(x: x, y: y, width: width, height: height),
@@ -41,45 +41,37 @@ class OverlayPanel: NSPanel {
     }
     
     func showRecording() {
-        overlayState.mode = .recording
         overlayState.audioLevel = 0
-        
-        alphaValue = 0
+        alphaValue = 1
         orderFront(nil)
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.15
-            self.animator().alphaValue = 1
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)) {
+            overlayState.mode = .recording
         }
     }
-    
+
     func updateLevel(_ level: Float) {
         overlayState.audioLevel = level
     }
-    
+
     func updateBandLevels(_ levels: [Float]) {
         overlayState.bandLevels = levels
     }
-    
+
     func showProcessing() {
         overlayState.mode = .processing
     }
-    
+
     func showError(_ message: String) {
         overlayState.mode = .error(message)
-        // Auto-dismiss after 2 seconds
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
             self?.dismiss()
         }
     }
-    
+
     func dismiss() {
-        NSAnimationContext.runAnimationGroup({ context in
-            context.duration = 0.2
-            self.animator().alphaValue = 0
-        }, completionHandler: {
-            self.orderOut(nil)
-            self.overlayState.mode = .idle
-        })
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.35)) {
+            overlayState.mode = .idle
+        }
     }
 }
 
@@ -100,22 +92,59 @@ class OverlayState: ObservableObject {
 struct OverlayView: View {
     @ObservedObject var state: OverlayState
     
-    var body: some View {
-        Group {
-            if state.mode != .idle {
-                pillContent
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 10)
-                    .background(
-                        Capsule()
-                            .fill(.ultraThinMaterial)
-                            .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
-                    )
+    private var isActive: Bool { state.mode != .idle }
 
+    var body: some View {
+        ZStack {
+            if isActive {
+                RadialGradient(
+                    gradient: Gradient(stops: [
+                        .init(color: Color.blue.opacity(0.3), location: 0),
+                        .init(color: Color.blue.opacity(0.12), location: 0.45),
+                        .init(color: Color.blue.opacity(0.03), location: 0.75),
+                        .init(color: Color.clear, location: 1.0)
+                    ]),
+                    center: UnitPoint(x: 0.5, y: 0.58),
+                    startRadius: 10,
+                    endRadius: 300
+                )
+                .transition(.opacity)
+            }
+
+            VStack(spacing: 0) {
+                Spacer()
+                    .frame(height: 265)
+
+                ZStack {
+                    if isActive {
+                        pillContent
+                            .transition(.opacity)
+                    }
+                }
+                .frame(minWidth: 40, minHeight: 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    ZStack {
+                        Capsule()
+                            .fill(Color.black.opacity(isActive ? 0.75 : 0.4))
+                        Capsule()
+                            .fill(.thinMaterial)
+                    }
+                    .shadow(color: .black.opacity(isActive ? 0.35 : 0.1), radius: isActive ? 16 : 6, y: isActive ? 4 : 2)
+                )
+                .overlay(
+                    Capsule()
+                        .strokeBorder(Color.white.opacity(isActive ? 0.3 : 0.35), lineWidth: isActive ? 1 : 1.5)
+                )
+                .scaleEffect(isActive ? 1.0 : 0.5)
+                .offset(y: isActive ? 0 : 25)
+
+                Spacer()
             }
         }
     }
-    
+
     @ViewBuilder
     private var pillContent: some View {
         switch state.mode {
