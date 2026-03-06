@@ -75,11 +75,15 @@ enum FormattingStyle: String, CaseIterable {
     
     /// Prompt for Gemini audio transcription (transcribe + format in one step)
     var geminiPrompt: String {
+        let noiseRule = "IGNORE all background noise, sound effects, music, and non-speech sounds. " +
+            "Only transcribe human speech. If there is no speech, respond with {\"text\":\"\"}."
+        
         switch self {
         case .verbatim:
             return """
             Transcribe this audio exactly as spoken. Include all filler words (um, uh, like, you know). \
             All lowercase. No punctuation unless clearly intended. \
+            \(noiseRule) \
             You MUST respond with ONLY a JSON object: {"text":"transcription here"}
             """
         case .casual:
@@ -87,6 +91,7 @@ enum FormattingStyle: String, CaseIterable {
             Transcribe this audio. Remove filler sounds (um, uh, er) but keep everything else exactly as spoken — \
             casual phrases, slang, sentence structure, contractions. All lowercase. Minimal punctuation. \
             PRESERVE any symbols the speaker mentions — parentheses, quotes, brackets, etc. \
+            \(noiseRule) \
             You MUST respond with ONLY a JSON object: {"text":"transcription here"}
             """
         case .formatted:
@@ -95,6 +100,7 @@ enum FormattingStyle: String, CaseIterable {
             Fix punctuation and capitalization. Keep the speaker's EXACT words and sentence structure — \
             do not rephrase or rewrite. Keep contractions as spoken. Only fix obvious grammar errors. \
             PRESERVE any symbols the speaker mentions — parentheses, quotes, brackets, etc. \
+            \(noiseRule) \
             You MUST respond with ONLY a JSON object: {"text":"transcription here"}
             """
         case .professional:
@@ -103,6 +109,7 @@ enum FormattingStyle: String, CaseIterable {
             Fix grammar, improve word choice, use proper punctuation and capitalization. \
             Expand contractions. You MAY rephrase for clarity and professionalism, but keep the original meaning. \
             PRESERVE any symbols the speaker mentions — parentheses, quotes, brackets, etc. \
+            \(noiseRule) \
             You MUST respond with ONLY a JSON object: {"text":"transcription here"}
             """
         }
@@ -110,23 +117,20 @@ enum FormattingStyle: String, CaseIterable {
 }
 
 enum APIProvider: String, CaseIterable {
-    case none = "none"
     case gemini = "gemini"
     case openai = "openai"
     case anthropic = "anthropic"
     
     var label: String {
         switch self {
-        case .none: return "None (Apple Speech only)"
-        case .gemini: return "Google Gemini (transcribe + format)"
-        case .openai: return "OpenAI (format only)"
-        case .anthropic: return "Anthropic (format only)"
+        case .gemini: return "Google Gemini"
+        case .openai: return "OpenAI"
+        case .anthropic: return "Anthropic"
         }
     }
     
     var defaultModel: String {
         switch self {
-        case .none: return ""
         case .gemini: return "gemini-2.5-flash"
         case .openai: return "gpt-4o-mini"
         case .anthropic: return "claude-haiku-4-5-20251001"
@@ -135,7 +139,6 @@ enum APIProvider: String, CaseIterable {
     
     var defaultEndpoint: String {
         switch self {
-        case .none: return ""
         case .gemini: return "https://generativelanguage.googleapis.com/v1beta"
         case .openai: return "https://api.openai.com/v1/chat/completions"
         case .anthropic: return "https://api.anthropic.com/v1/messages"
@@ -184,7 +187,7 @@ class TextFormatter {
     /// Format already-transcribed text (OpenAI / Anthropic)
     func format(_ text: String, completion: @escaping (Result<String, Error>) -> Void) {
         log("format() called — provider=\(provider.rawValue) style=\(style.rawValue)")
-        guard provider != .none, provider != .gemini, style != .verbatim, !apiKey.isEmpty else {
+        guard provider != .gemini, style != .verbatim, !apiKey.isEmpty else {
             completion(.success(text))
             return
         }

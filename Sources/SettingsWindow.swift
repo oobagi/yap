@@ -21,7 +21,7 @@ struct SettingsView: View {
         let formatting = config["formatting"] as? [String: Any] ?? [:]
         _hotkey = State(initialValue: config["hotkey"] as? String ?? "fn")
         _style = State(initialValue: formatting["style"] as? String ?? "verbatim")
-        _provider = State(initialValue: formatting["provider"] as? String ?? "none")
+        _provider = State(initialValue: formatting["provider"] as? String ?? "gemini")
         _apiKey = State(initialValue: formatting["api_key"] as? String ?? "")
         _model = State(initialValue: formatting["model"] as? String ?? "")
     }
@@ -31,7 +31,11 @@ struct SettingsView: View {
     }
     
     private var selectedProvider: APIProvider {
-        APIProvider.allCases.first { $0.rawValue == provider } ?? .none
+        APIProvider.allCases.first { $0.rawValue == provider } ?? .gemini
+    }
+    
+    private var hasAPIKey: Bool {
+        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     var body: some View {
@@ -94,27 +98,27 @@ struct SettingsView: View {
                     }
                     .pickerStyle(.menu)
                     
-                    if selectedProvider != .none {
-                        TextField("API Key", text: $apiKey)
-                            .textFieldStyle(.roundedBorder)
-                        
-                        TextField("Model (blank = default: \(selectedProvider.defaultModel))", text: $model)
-                            .textFieldStyle(.roundedBorder)
-                            .font(.body)
-                    }
+                    TextField("API Key", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    TextField("Model (blank = \(selectedProvider.defaultModel))", text: $model)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.body)
                 } header: {
                     Text("AI Provider")
                 } footer: {
-                    if selectedProvider == .gemini {
-                        Text("Gemini handles both transcription and formatting — Apple Speech is skipped entirely.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    } else if selectedProvider == .none && selectedStyle != .verbatim {
-                        Text("⚠️ Select a provider and enter an API key to enable AI formatting.")
-                            .font(.caption)
-                            .foregroundColor(.orange)
-                    } else if selectedProvider != .none && selectedProvider != .gemini {
-                        Text("Uses Apple Speech for transcription, then \(selectedProvider.label) for formatting.")
+                    if hasAPIKey {
+                        if selectedProvider.handlesTranscription {
+                            Text("✅ \(selectedProvider.label) will handle transcription and formatting.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("✅ Apple Speech transcribes → \(selectedProvider.label) formats the text.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    } else {
+                        Text("No API key — using Apple's built-in dictation (on-device, no formatting).")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }

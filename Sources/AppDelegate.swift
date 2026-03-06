@@ -199,10 +199,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         let apiKey = formatting["api_key"] as? String ?? ""
         let model = formatting["model"] as? String
         
-        let provider = APIProvider.allCases.first { $0.rawValue == providerName } ?? .none
+        let provider = APIProvider.allCases.first { $0.rawValue == providerName } ?? .gemini
         let style = FormattingStyle.allCases.first { $0.rawValue == styleName } ?? .verbatim
         
-        if provider != .none && !apiKey.isEmpty {
+        if !apiKey.isEmpty {
             // Gemini works with any style (it handles transcription)
             // OpenAI/Anthropic only make sense with non-verbatim styles
             if provider.handlesTranscription || style != .verbatim {
@@ -219,7 +219,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
             }
         } else {
             textFormatter = nil
-            log("Formatter: disabled")
+            log("No API key — using Apple Speech only")
         }
     }
     
