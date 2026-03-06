@@ -36,6 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     private var isEnabled = true
     private var enableMenuItem: NSMenuItem!
     private var peakAudioLevel: Float = 0
+    private var chimeWorkItem: DispatchWorkItem?
+    private var chimeSound: NSSound?
     
     // Separate transcription and formatting engines
     private var audioTranscriber: AudioTranscriber?
@@ -245,8 +247,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         peakAudioLevel = 0
         updateIcon(.recording)
         overlayPanel.showRecording()
-        NSSound(named: "Blow")?.play()
-        
+
         audioRecorder.onLevelUpdate = { [weak self] level in
             self?.overlayPanel.updateLevel(level)
             if level > (self?.peakAudioLevel ?? 0) {
@@ -256,9 +257,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         audioRecorder.onBandLevels = { [weak self] bands in
             self?.overlayPanel.updateBandLevels(bands)
         }
-        
+
         do {
             try audioRecorder.start()
+            // Delay chime so hardware has settled after engine.start()
+            let workItem = DispatchWorkItem { [weak self] in
+                let sound = NSSound(named: "Blow")
+                self?.chimeSound = sound
+                sound?.play()
+            }
+            chimeWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         } catch {
             log("Recording failed: \(error)")
             state = .idle
@@ -276,12 +285,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         
         // Too short = accidental tap
         guard duration >= 0.4 else {
+            chimeWorkItem?.cancel()
+            chimeWorkItem = nil
+            chimeSound?.stop()
+            chimeSound = nil
             audioRecorder.cancel()
             state = .idle
             updateIcon(.idle)
             overlayPanel.dismiss()
             return
         }
+
+        chimeWorkItem = nil
+        chimeSound = nil
         
         state = .processing
         updateIcon(.processing)

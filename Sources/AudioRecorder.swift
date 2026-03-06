@@ -6,22 +6,22 @@ class AudioRecorder {
     private var audioFile: AVAudioFile?
     let tempURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("voicetype_recording.wav")
-    
+
     /// Called on main thread with per-band levels (array of 0.0-1.0) and overall RMS (0.0-1.0)
     var onLevelUpdate: ((Float) -> Void)?
     var onBandLevels: (([Float]) -> Void)?
-    
+
     /// We compute 6 raw frequency bands, then mirror them for the 11-bar display
     private let rawBandCount = 6
-    
+
     /// Start recording microphone audio to a temporary WAV file.
+    /// Creates a fresh engine each call — caller should delay any sound playback
+    /// until after start() returns, since engine.start() triggers aggregate device creation.
     func start() throws {
         let engine = AVAudioEngine()
         self.engine = engine
-        
-        let inputNode = engine.inputNode
-        let inputFormat = inputNode.outputFormat(forBus: 0)
-        
+        let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+
         // Write as 16-bit PCM WAV
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
@@ -31,36 +31,36 @@ class AudioRecorder {
             AVLinearPCMIsFloatKey: false,
             AVLinearPCMIsBigEndianKey: false,
         ]
-        
+
         audioFile = try AVAudioFile(forWriting: tempURL, settings: settings)
-        
-        inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
+
+        engine.inputNode.installTap(onBus: 0, bufferSize: 2048, format: inputFormat) { [weak self] buffer, _ in
             guard let self = self else { return }
             try? self.audioFile?.write(from: buffer)
-            
+
             guard let channelData = buffer.floatChannelData?[0] else { return }
             let frames = Int(buffer.frameLength)
-            
+
             // RMS for overall level
             var sum: Float = 0
             for i in 0..<frames { sum += channelData[i] * channelData[i] }
             let rms = sqrtf(sum / Float(max(frames, 1)))
             let level = min(rms * 18.0, 1.0)
-            
+
             // FFT for per-band levels, mirrored for symmetric display
             let rawBands = self.computeBands(channelData: channelData, frameCount: frames, sampleRate: Float(inputFormat.sampleRate))
             let mirrored = self.mirrorBands(rawBands)
-            
+
             DispatchQueue.main.async {
                 self.onLevelUpdate?(level)
                 self.onBandLevels?(mirrored)
             }
         }
-        
+
         engine.prepare()
         try engine.start()
     }
-    
+
     /// Stop recording and return the audio file URL. Returns nil on failure.
     func stop() -> URL? {
         engine?.inputNode.removeTap(onBus: 0)
@@ -69,7 +69,7 @@ class AudioRecorder {
         audioFile = nil
         return FileManager.default.fileExists(atPath: tempURL.path) ? tempURL : nil
     }
-    
+
     /// Cancel recording without returning data.
     func cancel() {
         engine?.inputNode.removeTap(onBus: 0)
