@@ -253,6 +253,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 self?.peakAudioLevel = level
             }
         }
+        audioRecorder.onBandLevels = { [weak self] bands in
+            self?.overlayPanel.updateBandLevels(bands)
+        }
         
         do {
             try audioRecorder.start()

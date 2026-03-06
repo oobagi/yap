@@ -56,6 +56,10 @@ class OverlayPanel: NSPanel {
         overlayState.audioLevel = level
     }
     
+    func updateBandLevels(_ levels: [Float]) {
+        overlayState.bandLevels = levels
+    }
+    
     func showProcessing() {
         overlayState.mode = .processing
     }
@@ -88,6 +92,7 @@ enum OverlayMode: Equatable {
 class OverlayState: ObservableObject {
     @Published var mode: OverlayMode = .idle
     @Published var audioLevel: Float = 0
+    @Published var bandLevels: [Float] = Array(repeating: 0, count: 11)
 }
 
 // MARK: - SwiftUI Views
@@ -115,7 +120,7 @@ struct OverlayView: View {
     private var pillContent: some View {
         switch state.mode {
         case .recording, .processing:
-            WaveformBars(level: CGFloat(state.audioLevel), isProcessing: state.mode == .processing)
+            WaveformBars(level: CGFloat(state.audioLevel), bandLevels: state.bandLevels, isProcessing: state.mode == .processing)
                 .frame(width: 52, height: 28)
         case .error(let message):
             HStack(spacing: 6) {
@@ -135,6 +140,7 @@ struct OverlayView: View {
 
 struct WaveformBars: View {
     var level: CGFloat
+    var bandLevels: [Float]
     var isProcessing: Bool
     let barCount = 11
     
@@ -142,44 +148,35 @@ struct WaveformBars: View {
         if isProcessing {
             WaveAnimationBars(lastLevel: level, barCount: barCount)
         } else {
-            AudioReactiveBars(level: level, barCount: barCount)
+            AudioReactiveBars(bandLevels: bandLevels, barCount: barCount)
         }
     }
 }
 
 // MARK: - Recording: lightweight, no TimelineView
 struct AudioReactiveBars: View {
-    var level: CGFloat
+    var bandLevels: [Float]
     let barCount: Int
     
-    // Per-bar scale offsets to break symmetry — each bar has a unique personality
-    // Exponential rise from edges to center
-    private let barScales: [CGFloat] = [0.05, 0.12, 0.25, 0.45, 0.72, 1.0, 0.78, 0.5, 0.28, 0.14, 0.06]
+    // Position scaling — center bars reach full height, edges shorter
+    private let positionScale: [CGFloat] = [0.3, 0.45, 0.62, 0.78, 0.92, 1.0, 0.95, 0.82, 0.65, 0.48, 0.32]
     
     var body: some View {
         HStack(spacing: 2) {
             ForEach(0..<barCount, id: \.self) { index in
-                let scale = barScales[index]
+                let bandLevel = index < bandLevels.count ? CGFloat(bandLevels[index]) : 0
+                let scale = positionScale[index]
                 
                 let minH: CGFloat = 5
                 let maxH: CGFloat = 28
-                
                 let barCeiling = minH + (maxH - minH) * scale
                 
-                // Very responsive — even quiet audio moves bars noticeably
-                let boosted = pow(level, 0.2)
-                let targetHeight = minH + (barCeiling - minH) * boosted
-                
-                // Each bar gets its own phase-shifted wobble based on audio
-                let wobble1 = sin(Double(index) * 1.9 + Double(level) * 14.0)
-                let wobble2 = sin(Double(index) * 3.7 + Double(level) * 22.0)
-                let variation = CGFloat(wobble1 * 1.8 + wobble2 * 1.2) * boosted * scale
-                let barHeight = max(minH, min(barCeiling, targetHeight + variation))
+                let barHeight = max(minH, min(barCeiling, minH + (barCeiling - minH) * bandLevel))
                 
                 RoundedRectangle(cornerRadius: 1.5)
                     .fill(Color.white.opacity(0.9))
                     .frame(width: 3, height: barHeight)
-                    .animation(.easeOut(duration: 0.1), value: level)
+                    .animation(.easeOut(duration: 0.1), value: bandLevel)
             }
         }
     }
