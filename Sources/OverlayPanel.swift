@@ -177,7 +177,9 @@ struct AudioReactiveBars: View {
                 let maxH: CGFloat = 28
                 let barCeiling = minH + (maxH - minH) * scale
                 
-                let driven = pow(blended, 0.6)
+                // Scale so bars max out at ~75% volume, clamp at 1.0
+                let scaled = min(blended / 0.75, 1.0)
+                let driven = pow(scaled, 0.6)
                 let barHeight = max(minH, min(barCeiling, minH + (barCeiling - minH) * driven))
                 
                 RoundedRectangle(cornerRadius: 1.5)
