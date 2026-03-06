@@ -152,35 +152,31 @@ struct AudioReactiveBars: View {
     var level: CGFloat
     let barCount: Int
     
+    // Per-bar scale offsets to break symmetry — each bar has a unique personality
+    private let barScales: [CGFloat] = [0.35, 0.55, 0.78, 1.0, 0.85, 0.62, 0.4]
+    
     var body: some View {
         HStack(spacing: 3) {
             ForEach(0..<barCount, id: \.self) { index in
-                let center = CGFloat(barCount - 1) / 2.0
-                let distFromCenter = abs(CGFloat(index) - center) / center
-                
-                // Cosine bell: smooth sine-wave shape from edges to center
-                // Center bar = 1.0, edge bars ≈ 0.15
-                let positionScale = pow(cos(distFromCenter * .pi / 2), 1.5)
+                let scale = barScales[index]
                 
                 let minH: CGFloat = 6
-                let maxH: CGFloat = 24
+                let maxH: CGFloat = 28
                 
-                // Edge bars have a lower ceiling, center bars reach full 24
-                let barCeiling = minH + (maxH - minH) * CGFloat(max(0.2, positionScale))
+                let barCeiling = minH + (maxH - minH) * scale
                 
                 let boosted = pow(level, 0.25)
                 let targetHeight = minH + (barCeiling - minH) * boosted
                 
-                // Bouncy per-bar jitter
-                let seed1 = sin(Double(index) * 3.1 + Double(level) * 15.0)
-                let seed2 = cos(Double(index) * 2.3 + Double(level) * 9.0)
-                let jitter = CGFloat(seed1 * 2.0 + seed2 * 1.5) * boosted
-                let barHeight = max(minH, min(barCeiling, targetHeight + jitter))
+                // Gentle per-bar variation — smooth, not jittery
+                let seed = sin(Double(index) * 2.7 + Double(level) * 8.0)
+                let variation = CGFloat(seed) * 2.0 * boosted
+                let barHeight = max(minH, min(barCeiling, targetHeight + variation))
                 
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.white.opacity(0.9))
                     .frame(width: 4, height: barHeight)
-                    .animation(.spring(response: 0.12, dampingFraction: 0.6), value: level)
+                    .animation(.easeOut(duration: 0.12), value: level)
             }
         }
     }
