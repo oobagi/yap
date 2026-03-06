@@ -159,7 +159,7 @@ struct AudioReactiveBars: View {
     let barCount: Int
     
     // Position scaling — center bars reach full height, edges shorter
-    private let positionScale: [CGFloat] = [0.3, 0.45, 0.62, 0.78, 0.92, 1.0, 0.95, 0.82, 0.65, 0.48, 0.32]
+    private let positionScale: [CGFloat] = [0.35, 0.48, 0.64, 0.8, 0.93, 1.0, 0.95, 0.82, 0.66, 0.5, 0.38]
     
     var body: some View {
         HStack(spacing: 2) {
@@ -194,10 +194,13 @@ struct WaveAnimationBars: View {
     var body: some View {
         TimelineView(.animation) { timeline in
             let elapsed = startTime.map { timeline.date.timeIntervalSince($0) } ?? 0
-            // One full sweep takes 1.0s, wave travels from off-left (-2) to off-right (barCount+1)
-            let sweepRange = Double(barCount) + 3.0
-            let t = elapsed.truncatingRemainder(dividingBy: 1.0) / 1.0
-            let waveCenter = -2.0 + t * sweepRange
+            // Sweep from well off-left to well off-right so the wave
+            // fully exits before looping. With gaussian width 6.0,
+            // need ~5 units of margin for the tail to fully disappear.
+            let margin = 5.0
+            let sweepRange = Double(barCount - 1) + margin * 2
+            let t = elapsed.truncatingRemainder(dividingBy: 1.2) / 1.2
+            let waveCenter = -margin + t * sweepRange
             
             HStack(spacing: 2) {
                 ForEach(0..<barCount, id: \.self) { index in

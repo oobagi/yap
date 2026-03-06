@@ -11,7 +11,8 @@ class AudioRecorder {
     var onLevelUpdate: ((Float) -> Void)?
     var onBandLevels: (([Float]) -> Void)?
     
-    private let bandCount = 11
+    /// We compute 6 raw frequency bands, then mirror them for the 11-bar display
+    private let rawBandCount = 6
     
     /// Start recording microphone audio to a temporary WAV file.
     func start() throws {
@@ -46,12 +47,13 @@ class AudioRecorder {
             let rms = sqrtf(sum / Float(max(frames, 1)))
             let level = min(rms * 18.0, 1.0)
             
-            // FFT for per-band levels
-            let bands = self.computeBands(channelData: channelData, frameCount: frames, sampleRate: Float(inputFormat.sampleRate))
+            // FFT for per-band levels, mirrored for symmetric display
+            let rawBands = self.computeBands(channelData: channelData, frameCount: frames, sampleRate: Float(inputFormat.sampleRate))
+            let mirrored = self.mirrorBands(rawBands)
             
             DispatchQueue.main.async {
                 self.onLevelUpdate?(level)
-                self.onBandLevels?(bands)
+                self.onBandLevels?(mirrored)
             }
         }
         
@@ -125,10 +127,13 @@ class AudioRecorder {
         let logMin = log2(minFreq)
         let logMax = log2(maxFreq)
         
-        var bands = [Float](repeating: 0, count: bandCount)
-        for i in 0..<bandCount {
-            let freqLow = pow(2.0, logMin + (logMax - logMin) * Float(i) / Float(bandCount))
-            let freqHigh = pow(2.0, logMin + (logMax - logMin) * Float(i + 1) / Float(bandCount))
+        // Per-band boost — lower bands get extra gain since voice fundamental is there
+        let bandBoosts: [Float] = [1.8, 1.5, 1.3, 1.1, 1.0, 0.9]
+        
+        var bands = [Float](repeating: 0, count: rawBandCount)
+        for i in 0..<rawBandCount {
+            let freqLow = pow(2.0, logMin + (logMax - logMin) * Float(i) / Float(rawBandCount))
+            let freqHigh = pow(2.0, logMin + (logMax - logMin) * Float(i + 1) / Float(rawBandCount))
             let binLow = max(1, Int(freqLow / binWidth))
             let binHigh = min(fftSize / 2 - 1, Int(freqHigh / binWidth))
             
@@ -136,12 +141,34 @@ class AudioRecorder {
                 var sum: Float = 0
                 for b in binLow...binHigh { sum += magnitudes[b] }
                 let avg = sum / Float(binHigh - binLow + 1)
-                // Convert to dB-ish scale, normalize aggressively
                 let db = 10 * log10(max(avg, 1e-10))
-                bands[i] = min(1.0, max(0.0, (db + 50) / 40))
+                let boost = i < bandBoosts.count ? bandBoosts[i] : 1.0
+                bands[i] = min(1.0, max(0.0, (db + 50) / 35 * boost))
             }
         }
         
         return bands
+    }
+    
+    /// Mirror 6 raw bands into 11 display bars: center = band 0 (strongest), fanning out
+    /// Left and right sides get slightly different blends to avoid perfect symmetry
+    private func mirrorBands(_ raw: [Float]) -> [Float] {
+        guard raw.count >= 6 else { return Array(repeating: 0, count: 11) }
+        // Center bar = band 0 (lowest freq, most voice energy)
+        // Fanning out: band 1, 2, 3, 4, 5
+        // Left side gets slight blend offset for natural asymmetry
+        return [
+            raw[5] * 0.9 + raw[4] * 0.1,   // bar 0  (leftmost)
+            raw[4] * 0.85 + raw[5] * 0.15,  // bar 1
+            raw[3] * 0.9 + raw[4] * 0.1,    // bar 2
+            raw[2] * 0.85 + raw[3] * 0.15,  // bar 3
+            raw[1] * 0.9 + raw[2] * 0.1,    // bar 4
+            raw[0],                           // bar 5  (center)
+            raw[1] * 0.95 + raw[0] * 0.05,  // bar 6
+            raw[2] * 0.9 + raw[1] * 0.1,    // bar 7
+            raw[3] * 0.95 + raw[2] * 0.05,  // bar 8
+            raw[4] * 0.9 + raw[3] * 0.1,    // bar 9
+            raw[5] * 0.95 + raw[4] * 0.05,  // bar 10 (rightmost)
+        ]
     }
 }
