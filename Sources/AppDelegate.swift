@@ -55,6 +55,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         setupHotkey()
         setupEngines()
         overlayPanel.orderFront(nil)
+        startOnboardingIfNeeded()
         log("Setup complete — ready")
     }
     
@@ -156,6 +157,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         hotkeyManager?.stop()
         setupHotkey()
         setupEngines()
+        if overlayPanel.currentOnboardingStep != nil {
+            let hotkeyType = config["hotkey"] as? String ?? "fn"
+            overlayPanel.setHotkeyLabel(hotkeyType == "option" ? "option" : "fn")
+        }
     }
     
     // MARK: - Permissions
@@ -235,6 +240,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         }
     }
     
+    // MARK: - Onboarding
+
+    private func startOnboardingIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: "onboardingComplete") else { return }
+        let hotkeyType = config["hotkey"] as? String ?? "fn"
+        overlayPanel.setHotkeyLabel(hotkeyType == "option" ? "option" : "fn")
+        overlayPanel.advanceOnboarding(to: .dictatePrompt)
+    }
+
+    private func onFirstDictation() {
+        guard overlayPanel.currentOnboardingStep == .dictatePrompt else { return }
+
+        let txConfig = config["transcription"] as? [String: Any] ?? [:]
+        let txKey = txConfig["api_key"] as? String ?? ""
+
+        if txKey.isEmpty {
+            overlayPanel.advanceOnboarding(to: .apiKeyPrompt)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                self?.finalizeOnboarding()
+            }
+        } else {
+            finalizeOnboarding()
+        }
+    }
+
+    private func finalizeOnboarding() {
+        guard !UserDefaults.standard.bool(forKey: "onboardingComplete") else { return }
+        UserDefaults.standard.set(true, forKey: "onboardingComplete")
+        overlayPanel.completeOnboarding()
+    }
+
     // MARK: - Recording Flow
     
     private func startRecording() {
@@ -285,15 +321,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         log("Duration: \(String(format: "%.1f", duration))s, peak: \(peakAudioLevel)")
         
         // Too short = accidental tap
-        guard duration >= 0.4 else {
-            chimeWorkItem?.cancel()
-            chimeWorkItem = nil
-            chimeSound?.stop()
-            chimeSound = nil
-            audioRecorder.cancel()
-            state = .idle
-            updateIcon(.idle)
-            overlayPanel.dismiss()
+        guard duration >= 1.2 else {
+            // Keep pill expanded and mic running for a smooth minimum duration
+            let remaining = max(0.5, 1.0 - duration)
+            DispatchQueue.main.asyncAfter(deadline: .now() + remaining) { [weak self] in
+                guard let self, self.state == .recording else { return }
+                self.audioRecorder.cancel()
+                self.chimeWorkItem = nil
+                self.chimeSound = nil
+                NSSound(named: "Pop")?.play()
+                self.showTip(.holdTip)
+            }
             return
         }
 
@@ -313,7 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         // Silence check — levels are RMS * 5, so 0.15 ≈ actual quiet speech threshold
         if peakAudioLevel < 0.15 {
             log("Silence detected (peak \(peakAudioLevel)) — skipping")
-            finishProcessing()
+            showTip(.speakTip)
             return
         }
         
@@ -332,7 +370,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                     
                     guard hasSpeech else {
                         log("Pre-check: no speech detected — skipping API call")
-                        self?.finishProcessing()
+                        self?.showTip(.speakTip)
                         return
                     }
                     
@@ -350,7 +388,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                         self?.maybeFormat(text)
                     case .failure(let error):
                         log("❌ Apple Speech failed: \(error)")
-                        self?.showError(error)
+                        self?.showTip(.speakTip)
                     }
                 }
             }
@@ -409,16 +447,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                     switch result {
                     case .success(let formatted):
                         log("Formatted: \"\(formatted)\"")
-                        self?.pasteManager.paste(formatted)
+                        self?.pasteText(formatted)
                     case .failure(let error):
                         log("Format failed, using raw: \(error)")
-                        self?.pasteManager.paste(text)
+                        self?.pasteText(text)
                     }
                     self?.finishProcessing()
                 }
             }
         } else {
-            pasteManager.paste(text)
+            pasteText(text)
             finishProcessing()
         }
     }
@@ -437,7 +475,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 return
             }
             if !trimmed.isEmpty {
-                pasteManager.paste(trimmed)
+                pasteText(trimmed)
             }
             finishProcessing()
         case .failure(let error):
@@ -446,6 +484,25 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         }
     }
     
+    private func showTip(_ step: OnboardingStep) {
+        state = .idle
+        updateIcon(.idle)
+        overlayPanel.showNoSpeech()
+        overlayPanel.advanceOnboarding(to: step)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            guard self?.overlayPanel.currentOnboardingStep == step else { return }
+            self?.overlayPanel.dismiss()
+            self?.overlayPanel.completeOnboarding()
+        }
+    }
+
+    private func pasteText(_ text: String) {
+        pasteManager.paste(text)
+        if !UserDefaults.standard.bool(forKey: "onboardingComplete") {
+            onFirstDictation()
+        }
+    }
+
     private func finishProcessing() {
         state = .idle
         updateIcon(.idle)

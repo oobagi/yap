@@ -73,42 +73,97 @@ class OverlayPanel: NSPanel {
             overlayState.mode = .idle
         }
     }
+
+    var currentOnboardingStep: OnboardingStep? {
+        overlayState.onboardingStep
+    }
+
+    func advanceOnboarding(to step: OnboardingStep) {
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)) {
+            overlayState.onboardingStep = step
+        }
+    }
+
+    func setHotkeyLabel(_ label: String) {
+        overlayState.hotkeyLabel = label
+    }
+
+    func showNoSpeech() {
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.35)) {
+            overlayState.mode = .noSpeech
+        }
+        shake()
+    }
+
+    func shake() {
+        overlayState.shakeToken = UUID()
+    }
+
+    func completeOnboarding() {
+        withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.35)) {
+            overlayState.onboardingStep = nil
+        }
+    }
 }
 
 // MARK: - State
 
 enum OverlayMode: Equatable {
-    case idle, recording, processing, error(String)
+    case idle, recording, processing, noSpeech, error(String)
+}
+
+struct ShakeEffect: GeometryEffect {
+    var progress: CGFloat = 0
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func effectValue(size: CGSize) -> ProjectionTransform {
+        let offset = 10 * sin(progress * .pi * 6) * (1 - progress)
+        return ProjectionTransform(CGAffineTransform(translationX: offset, y: 0))
+    }
+}
+
+enum OnboardingStep: Equatable {
+    case dictatePrompt
+    case apiKeyPrompt
+    case speakTip
+    case holdTip
 }
 
 class OverlayState: ObservableObject {
     @Published var mode: OverlayMode = .idle
     @Published var audioLevel: Float = 0
     @Published var bandLevels: [Float] = Array(repeating: 0, count: 11)
+    @Published var onboardingStep: OnboardingStep? = nil
+    @Published var hotkeyLabel: String = "fn"
+    @Published var shakeToken: UUID = UUID()
+    var isOnboarding: Bool { onboardingStep != nil }
 }
 
 // MARK: - SwiftUI Views
 
 struct OverlayView: View {
     @ObservedObject var state: OverlayState
-    
+    @State private var shakeProgress: CGFloat = 0
+
     private var isActive: Bool { state.mode != .idle }
+    private var isExpanded: Bool { state.mode != .idle }
+
+    private var audioBounceFactor: CGFloat {
+        guard state.mode == .recording else { return 1.0 }
+        let level = min(CGFloat(state.audioLevel), 1.0)
+        return 1.0 + pow(level, 1.5) * 0.25
+    }
 
     var body: some View {
         ZStack {
-            if isActive {
-                RadialGradient(
-                    gradient: Gradient(stops: [
-                        .init(color: Color.blue.opacity(0.3), location: 0),
-                        .init(color: Color.blue.opacity(0.12), location: 0.45),
-                        .init(color: Color.blue.opacity(0.03), location: 0.75),
-                        .init(color: Color.clear, location: 1.0)
-                    ]),
-                    center: UnitPoint(x: 0.5, y: 0.58),
-                    startRadius: 10,
-                    endRadius: 300
-                )
-                .transition(.opacity)
+            if isExpanded {
+                LavaLampBackground()
+                    .offset(y: -20)
+                    .transition(.opacity)
             }
 
             VStack(spacing: 0) {
@@ -121,26 +176,44 @@ struct OverlayView: View {
                             .transition(.opacity)
                     }
                 }
-                .frame(minWidth: 40, minHeight: 8)
+                .frame(minWidth: 40, minHeight: isExpanded ? 28 : 8)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(
                     ZStack {
                         Capsule()
-                            .fill(Color.black.opacity(isActive ? 0.75 : 0.4))
+                            .fill(Color.black.opacity(isExpanded ? 0.75 : 0.4))
                         Capsule()
                             .fill(.thinMaterial)
                     }
-                    .shadow(color: .black.opacity(isActive ? 0.35 : 0.1), radius: isActive ? 16 : 6, y: isActive ? 4 : 2)
+                    .shadow(color: .black.opacity(isExpanded ? 0.35 : 0.1), radius: isExpanded ? 16 : 6, y: isExpanded ? 4 : 2)
                 )
                 .overlay(
                     Capsule()
-                        .strokeBorder(Color.white.opacity(isActive ? 0.3 : 0.35), lineWidth: isActive ? 1 : 1.5)
+                        .strokeBorder(Color.white.opacity(isExpanded ? 0.3 : 0.35), lineWidth: isExpanded ? 1 : 1.5)
                 )
-                .scaleEffect(isActive ? 1.0 : 0.5)
-                .offset(y: isActive ? 0 : 25)
+                .scaleEffect((isExpanded ? 1.0 : 0.5) * audioBounceFactor)
+                .offset(y: isExpanded ? 0 : 40)
+                .modifier(ShakeEffect(progress: shakeProgress))
+                .animation(.spring(response: 0.25, dampingFraction: 0.45, blendDuration: 0.05), value: state.audioLevel)
+                .overlay(alignment: .top) {
+                    if let step = state.onboardingStep,
+                   state.mode == .idle || state.mode == .noSpeech {
+                        OnboardingCardView(step: step, hotkeyLabel: state.hotkeyLabel)
+                            .id(step)
+                            .fixedSize()
+                            .offset(y: -28)
+                            .transition(.opacity.combined(with: .offset(y: 8)))
+                    }
+                }
 
                 Spacer()
+            }
+        }
+        .onChange(of: state.shakeToken) { _ in
+            shakeProgress = 0
+            withAnimation(.easeOut(duration: 0.5)) {
+                shakeProgress = 1
             }
         }
     }
@@ -151,6 +224,15 @@ struct OverlayView: View {
         case .recording, .processing:
             WaveformBars(level: CGFloat(state.audioLevel), bandLevels: state.bandLevels, isProcessing: state.mode == .processing)
                 .frame(width: 52, height: 28)
+        case .noSpeech:
+            HStack(spacing: 2) {
+                ForEach(0..<11, id: \.self) { _ in
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.white.opacity(0.25))
+                        .frame(width: 3, height: 5)
+                }
+            }
+            .frame(width: 52, height: 28)
         case .error(let message):
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -166,6 +248,97 @@ struct OverlayView: View {
         }
     }
 }
+
+// MARK: - Onboarding Views
+
+struct LavaLampBackground: View {
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            let t = timeline.date.timeIntervalSinceReferenceDate
+
+            ZStack {
+                Ellipse()
+                    .fill(Color.purple.opacity(0.5))
+                    .frame(width: 300, height: 140)
+                    .offset(x: cos(t * 0.7) * 120, y: sin(t * 0.5) * 35)
+
+                Ellipse()
+                    .fill(Color.blue.opacity(0.45))
+                    .frame(width: 360, height: 160)
+                    .offset(x: sin(t * 0.6 + 1.5) * 140, y: cos(t * 0.45 + 1.0) * 40)
+
+                Ellipse()
+                    .fill(Color.cyan.opacity(0.4))
+                    .frame(width: 280, height: 120)
+                    .offset(x: cos(t * 0.8 + 3.0) * 100, y: sin(t * 0.6 + 2.0) * 30)
+
+                Ellipse()
+                    .fill(Color.indigo.opacity(0.45))
+                    .frame(width: 320, height: 130)
+                    .offset(x: sin(t * 0.55 + 4.5) * 130, y: cos(t * 0.7 + 3.5) * 35)
+            }
+            .blur(radius: 55)
+        }
+    }
+}
+
+struct KeyCapView: View {
+    let label: String
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 12, weight: .semibold, design: .rounded))
+            .foregroundColor(.white)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(Color(white: 0.25))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(Color(white: 0.45), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.5), radius: 1, y: 1)
+    }
+}
+
+struct OnboardingCardView: View {
+    let step: OnboardingStep
+    var hotkeyLabel: String = "fn"
+
+    var body: some View {
+        Group {
+            switch step {
+            case .dictatePrompt:
+                HStack(spacing: 6) {
+                    Text("Press")
+                    KeyCapView(label: hotkeyLabel)
+                    Text("to start dictating")
+                }
+            case .apiKeyPrompt:
+                Text("For smarter results, add an API key in Settings")
+                    .multilineTextAlignment(.center)
+            case .speakTip:
+                HStack(spacing: 6) {
+                    Text("Didn't catch that — speak up while holding")
+                    KeyCapView(label: hotkeyLabel)
+                }
+            case .holdTip:
+                HStack(spacing: 6) {
+                    Text("Hold")
+                    KeyCapView(label: hotkeyLabel)
+                    Text("— don't just tap it")
+                }
+            }
+        }
+        .font(.system(size: 15, weight: .medium))
+        .foregroundColor(.white)
+        .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+    }
+}
+
+// MARK: - Waveform
 
 struct WaveformBars: View {
     var level: CGFloat

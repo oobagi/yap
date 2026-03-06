@@ -214,10 +214,10 @@ class AudioTranscriber {
             return
         }
         
-        // Scale timeout with audio length: ~15s base + 1s per second of audio
+        // Scale timeout with audio length: ~30s base + 1s per second of audio
         // 16-bit PCM WAV at typical sample rates ≈ 32KB/s (mono 16kHz) to 96KB/s (stereo 48kHz)
         let estimatedSeconds = Double(audioData.count) / 64_000  // conservative middle estimate
-        let timeout = max(15.0, 15.0 + estimatedSeconds)
+        let timeout = max(30.0, 30.0 + estimatedSeconds)
         
         log("Transcribing with \(provider.rawValue), model=\(model), audio=\(audioData.count) bytes, timeout=\(String(format: "%.0f", timeout))s")
         
@@ -249,7 +249,7 @@ class AudioTranscriber {
                 let isRetryable: Bool
                 if error is FormatterError {
                     switch error as! FormatterError {
-                    case .truncatedResponse, .noResponse:
+                    case .truncatedResponse, .noResponse, .parseFailed:
                         isRetryable = true
                     default:
                         isRetryable = false
@@ -297,11 +297,11 @@ class AudioTranscriber {
                     ["text": prompt]
                 ]
             ]],
-            "generationConfig": ["temperature": 0.0, "maxOutputTokens": 2048]
+            "generationConfig": ["temperature": 0.0, "maxOutputTokens": 2048, "responseMimeType": "application/json"]
         ]
-        
+
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        
+
         makeRequest(request, label: "Gemini") { data in
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let candidates = json["candidates"] as? [[String: Any]],
@@ -313,20 +313,20 @@ class AudioTranscriber {
                 }
                 return .failure(FormatterError.parseFailed)
             }
-            
+
             // Check finishReason — anything other than STOP means truncated/blocked
             let finishReason = candidate["finishReason"] as? String ?? "UNKNOWN"
             if finishReason != "STOP" {
                 log("⚠️ Gemini finishReason: \(finishReason) (expected STOP)")
                 return .failure(FormatterError.truncatedResponse(reason: finishReason))
             }
-            
+
             guard let content = candidate["content"] as? [String: Any],
                   let parts = content["parts"] as? [[String: Any]],
                   let text = parts.first?["text"] as? String else {
                 return .failure(FormatterError.parseFailed)
             }
-            
+
             return .success(self.extractJSON(from: text))
         } completion: { completion($0) }
     }
@@ -463,14 +463,25 @@ class AudioTranscriber {
     
     private func extractJSON(from text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip markdown code fences
         if s.hasPrefix("```json") { s = String(s.dropFirst(7)) }
         else if s.hasPrefix("```") { s = String(s.dropFirst(3)) }
         if s.hasSuffix("```") { s = String(s.dropLast(3)) }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Try direct JSON parse
         if let data = s.data(using: .utf8),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-           let text = parsed["text"] {
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = parsed["text"] as? String {
             return text
+        }
+        // Try to find JSON object anywhere in the string
+        if let start = s.range(of: "{"), let end = s.range(of: "}", options: .backwards) {
+            let jsonSlice = String(s[start.lowerBound...end.upperBound])
+            if let data = jsonSlice.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let text = parsed["text"] as? String {
+                return text
+            }
         }
         return s
     }
@@ -523,14 +534,14 @@ class TextFormatter {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
+        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
         let body: [String: Any] = [
             "contents": [[
                 "parts": [["text": "\(style.prompt)\n\n<input>\(text)</input>"]]
             ]],
-            "generationConfig": ["temperature": 0.0, "maxOutputTokens": 2048]
+            "generationConfig": ["temperature": 0.0, "maxOutputTokens": 2048, "responseMimeType": "application/json"]
         ]
         
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -573,10 +584,10 @@ class TextFormatter {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
+        request.timeoutInterval = 15
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
+
         let body: [String: Any] = [
             "model": model,
             "messages": [
@@ -613,7 +624,7 @@ class TextFormatter {
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 10
+        request.timeoutInterval = 15
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -656,14 +667,25 @@ class TextFormatter {
     
     static func extractJSON(from text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip markdown code fences
         if s.hasPrefix("```json") { s = String(s.dropFirst(7)) }
         else if s.hasPrefix("```") { s = String(s.dropFirst(3)) }
         if s.hasSuffix("```") { s = String(s.dropLast(3)) }
         s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Try direct JSON parse
         if let data = s.data(using: .utf8),
-           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: String],
-           let text = parsed["text"] {
+           let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let text = parsed["text"] as? String {
             return text
+        }
+        // Try to find JSON object anywhere in the string
+        if let start = s.range(of: "{"), let end = s.range(of: "}", options: .backwards) {
+            let jsonSlice = String(s[start.lowerBound...end.upperBound])
+            if let data = jsonSlice.data(using: .utf8),
+               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let text = parsed["text"] as? String {
+                return text
+            }
         }
         return s
     }
