@@ -157,22 +157,30 @@ struct AudioReactiveBars: View {
             ForEach(0..<barCount, id: \.self) { index in
                 let center = CGFloat(barCount - 1) / 2.0
                 let distFromCenter = abs(CGFloat(index) - center) / center
-                // Strong center emphasis: center bars get full height, edges get much less
-                let positionScale = 1.0 - (distFromCenter * distFromCenter * 0.8)
                 
-                // Aggressive boost so even moderate volume shows dramatic movement
-                let boosted = pow(level, 0.3)
-                let targetHeight = 6.0 + 18.0 * boosted * positionScale
-                // Per-bar jitter so they don't all move in lockstep
-                let seed1 = sin(Double(index) * 2.5 + Double(level) * 12.0)
-                let seed2 = cos(Double(index) * 1.8 + Double(level) * 7.0)
-                let variation = CGFloat(seed1 * 2.5 + seed2 * 1.5) * boosted
-                let barHeight = max(6.0, min(24.0, targetHeight + variation))
+                // Cosine bell: smooth sine-wave shape from edges to center
+                // Center bar = 1.0, edge bars ≈ 0.15
+                let positionScale = pow(cos(distFromCenter * .pi / 2), 1.5)
+                
+                let minH: CGFloat = 6
+                let maxH: CGFloat = 24
+                
+                // Edge bars have a lower ceiling, center bars reach full 24
+                let barCeiling = minH + (maxH - minH) * CGFloat(max(0.2, positionScale))
+                
+                let boosted = pow(level, 0.25)
+                let targetHeight = minH + (barCeiling - minH) * boosted
+                
+                // Bouncy per-bar jitter
+                let seed1 = sin(Double(index) * 3.1 + Double(level) * 15.0)
+                let seed2 = cos(Double(index) * 2.3 + Double(level) * 9.0)
+                let jitter = CGFloat(seed1 * 2.0 + seed2 * 1.5) * boosted
+                let barHeight = max(minH, min(barCeiling, targetHeight + jitter))
                 
                 RoundedRectangle(cornerRadius: 2)
                     .fill(Color.white.opacity(0.9))
                     .frame(width: 4, height: barHeight)
-                    .animation(.easeOut(duration: 0.08), value: level)
+                    .animation(.spring(response: 0.12, dampingFraction: 0.6), value: level)
             }
         }
     }

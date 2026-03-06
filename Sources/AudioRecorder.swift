@@ -41,7 +41,7 @@ class AudioRecorder {
             }
             let rms = sqrtf(sum / Float(max(frames, 1)))
             // Normalize to 0-1 range — aggressive scaling so normal speech fills the bars
-            let level = min(rms * 12.0, 1.0)
+            let level = min(rms * 18.0, 1.0)
             
             DispatchQueue.main.async {
                 self?.onLevelUpdate?(level)
