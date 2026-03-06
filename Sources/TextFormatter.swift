@@ -251,7 +251,7 @@ class AudioTranscriber {
                 }
                 return .failure(FormatterError.parseFailed)
             }
-            return .success(extractJSON(from: text))
+            return .success(self.extractJSON(from: text))
         } completion: { completion($0) }
     }
     
