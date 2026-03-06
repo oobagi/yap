@@ -56,9 +56,12 @@ class OverlayPanel: NSPanel {
         overlayState.audioLevel = level
     }
     
+    func updateBandLevels(_ levels: [Float]) {
+        overlayState.bandLevels = levels
+    }
+    
     func showProcessing() {
         overlayState.mode = .processing
-        overlayState.audioLevel = 0
     }
     
     func showError(_ message: String) {
@@ -89,6 +92,7 @@ enum OverlayMode: Equatable {
 class OverlayState: ObservableObject {
     @Published var mode: OverlayMode = .idle
     @Published var audioLevel: Float = 0
+    @Published var bandLevels: [Float] = Array(repeating: 0, count: 11)
 }
 
 // MARK: - SwiftUI Views
@@ -107,6 +111,7 @@ struct OverlayView: View {
                             .fill(.ultraThinMaterial)
                             .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
                     )
+
             }
         }
     }
@@ -114,13 +119,9 @@ struct OverlayView: View {
     @ViewBuilder
     private var pillContent: some View {
         switch state.mode {
-        case .recording:
-            WaveformBars(level: CGFloat(state.audioLevel))
-                .frame(width: 40, height: 24)
-        case .processing:
-            ProgressView()
-                .scaleEffect(0.6)
-                .frame(width: 40, height: 24)
+        case .recording, .processing:
+            WaveformBars(level: CGFloat(state.audioLevel), bandLevels: state.bandLevels, isProcessing: state.mode == .processing)
+                .frame(width: 52, height: 28)
         case .error(let message):
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.triangle.fill")
@@ -139,43 +140,109 @@ struct OverlayView: View {
 
 struct WaveformBars: View {
     var level: CGFloat
-    let barCount = 5
+    var bandLevels: [Float]
+    var isProcessing: Bool
+    let barCount = 11
     
     var body: some View {
-        HStack(spacing: 3) {
+        if isProcessing {
+            WaveAnimationBars(lastLevel: level, barCount: barCount)
+        } else {
+            AudioReactiveBars(bandLevels: bandLevels, barCount: barCount)
+        }
+    }
+}
+
+// MARK: - Recording: lightweight, no TimelineView
+struct AudioReactiveBars: View {
+    var bandLevels: [Float]
+    let barCount: Int
+    
+    // Position scaling — center emphasis, edges still move
+    private let positionScale: [CGFloat] = [0.35, 0.45, 0.6, 0.78, 0.92, 1.0, 0.94, 0.8, 0.63, 0.48, 0.38]
+    
+    var body: some View {
+        HStack(spacing: 2) {
             ForEach(0..<barCount, id: \.self) { index in
-                WaveformBar(level: level, index: index, total: barCount)
+                let bandLevel = index < bandLevels.count ? CGFloat(bandLevels[index]) : 0
+                // FFT variation: offset each bar's level by its band data
+                let bandOffset = index < bandLevels.count ? CGFloat(bandLevels[index]) : 0
+                // Blend: 70% overall volume + 30% per-band FFT variation
+                let overall = bandLevels.isEmpty ? bandLevel : CGFloat(bandLevels.reduce(Float(0), +) / Float(bandLevels.count))
+                let blended = overall * 0.7 + bandOffset * 0.3
+                
+                let scale = positionScale[index]
+                
+                let minH: CGFloat = 5
+                let maxH: CGFloat = 28
+                let barCeiling = minH + (maxH - minH) * scale
+                
+                // Scale so bars max out at ~75% volume, clamp at 1.0
+                let scaled = min(blended / 0.75, 1.0)
+                let driven = pow(scaled, 0.6)
+                let barHeight = max(minH, min(barCeiling, minH + (barCeiling - minH) * driven))
+                
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(Color.white.opacity(0.9))
+                    .frame(width: 3, height: barHeight)
+                    .animation(.easeOut(duration: 0.1), value: blended)
             }
         }
     }
 }
 
-struct WaveformBar: View {
-    var level: CGFloat
-    var index: Int
-    var total: Int
+// MARK: - Processing: TimelineView for wave animation
+struct WaveAnimationBars: View {
+    let lastLevel: CGFloat
+    let barCount: Int
     
-    private var barHeight: CGFloat {
-        let center = CGFloat(total - 1) / 2.0
-        let distFromCenter = abs(CGFloat(index) - center) / center
-        let positionScale = 1.0 - (distFromCenter * 0.5)
-        
-        let minHeight: CGFloat = 3
-        let maxHeight: CGFloat = 24
-        
-        let boosted = pow(level, 0.5)
-        let targetHeight = minHeight + (maxHeight - minHeight) * boosted * positionScale
-        
-        let seed = sin(Double(index) * 2.5 + Double(level) * 8.0)
-        let variation = CGFloat(seed) * 3.5 * boosted
-        
-        return max(minHeight, min(maxHeight, targetHeight + variation))
-    }
+    @State private var displayLevel: CGFloat = 1
+    @State private var waveStrength: CGFloat = 0
+    @State private var startTime: Date? = nil
     
     var body: some View {
-        RoundedRectangle(cornerRadius: 2)
-            .fill(Color.white.opacity(0.9))
-            .frame(width: 4, height: barHeight)
-            .animation(.easeOut(duration: 0.08), value: level)
+        TimelineView(.animation) { timeline in
+            let elapsed = startTime.map { timeline.date.timeIntervalSince($0) } ?? 0
+            // Sweep from well off-left to well off-right so the wave
+            // fully exits before looping. With gaussian width 6.0,
+            // need ~5 units of margin for the tail to fully disappear.
+            let margin = 5.0
+            let sweepRange = Double(barCount - 1) + margin * 2
+            let t = elapsed.truncatingRemainder(dividingBy: 1.2) / 1.2
+            let waveCenter = -margin + t * sweepRange
+            
+            HStack(spacing: 2) {
+                ForEach(0..<barCount, id: \.self) { index in
+                    // Audio-reactive base (decaying via displayLevel)
+                    let center = CGFloat(barCount - 1) / 2.0
+                    let distFromCenter = abs(CGFloat(index) - center) / center
+                    let positionScale = 1.0 - (distFromCenter * 0.5)
+                    let boosted = pow(lastLevel * displayLevel, 0.5)
+                    let audioH = max(6.0, min(28.0, 6.0 + 22.0 * boosted * positionScale))
+                    
+                    // Wave overlay — very wide and gentle rolling wave
+                    let distance = abs(Double(index) - waveCenter)
+                    let wave = exp(-distance * distance / 6.0)
+                    let waveH = 14.0 * CGFloat(wave) * waveStrength
+                    
+                    let barHeight = min(28.0, max(6.0, audioH + waveH))
+                    
+                    RoundedRectangle(cornerRadius: 1.5)
+                        .fill(Color.white.opacity(0.9))
+                        .frame(width: 3, height: barHeight)
+                }
+            }
+        }
+        .onAppear {
+            startTime = Date()
+            displayLevel = 1
+            waveStrength = 0
+            withAnimation(.easeOut(duration: 0.35)) {
+                displayLevel = 0
+            }
+            withAnimation(.easeIn(duration: 0.35).delay(0.15)) {
+                waveStrength = 1
+            }
+        }
     }
 }
