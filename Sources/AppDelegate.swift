@@ -2,12 +2,12 @@ import Cocoa
 import AVFoundation
 import os.log
 
-private let logger = OSLog(subsystem: "com.voicetype.app", category: "general")
+private let logger = OSLog(subsystem: "com.yap.app", category: "general")
 
 func log(_ message: String) {
     os_log("%{public}@", log: logger, type: .default, message)
     let logURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".config/voicetype/debug.log")
+        .appendingPathComponent(".config/yap/debug.log")
     let timestamp = ISO8601DateFormatter().string(from: Date())
     let line = "[\(timestamp)] \(message)\n"
     if let handle = try? FileHandle(forWritingTo: logURL) {
@@ -72,7 +72,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         
         let menu = NSMenu()
         
-        let titleItem = NSMenuItem(title: "VoiceType", action: nil, keyEquivalent: "")
+        let titleItem = NSMenuItem(title: "Yap", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
         menu.addItem(NSMenuItem.separator())
@@ -102,12 +102,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
             if let customIcon = loadMenuIcon() {
                 button.image = customIcon
             } else {
-                button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "VoiceType")
+                button.image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Yap")
             }
         case .recording:
-            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "VoiceType")
+            button.image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Yap")
         case .processing:
-            button.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "VoiceType")
+            button.image = NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "Yap")
         }
     }
     
@@ -165,7 +165,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
             log("Microphone permission: \(granted ? "✅" : "❌")")
             if !granted {
                 DispatchQueue.main.async {
-                    self.showNotification(title: "VoiceType", body: "Microphone access required.")
+                    self.showNotification(title: "Yap", body: "Microphone access required.")
                 }
             }
         }
@@ -189,7 +189,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         let started = hotkeyManager.start()
         log("Hotkey (\(hotkeyType)): \(started ? "✅" : "❌ — no Accessibility?")")
         if !started {
-            showNotification(title: "VoiceType", body: "Accessibility permission required.")
+            showNotification(title: "Yap", body: "Accessibility permission required.")
         }
     }
     

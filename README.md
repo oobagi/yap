@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="Resources/AppIcon.png" width="128" height="128" alt="VoiceType icon">
+  <img src="Resources/AppIcon.png" width="128" height="128" alt="Yap icon">
 </p>
 
-<h1 align="center">VoiceType</h1>
+<h1 align="center">Yap</h1>
 
 <p align="center">
   Hold a key, speak, release — your words are transcribed and pasted wherever you're typing.<br>
@@ -13,16 +13,16 @@
 
 ## Install
 
-**Download:** Grab the latest `VoiceType.app.zip` from [Releases](https://github.com/igaboo/voicetype/releases), unzip, and move to `/Applications`.
+**Download:** Grab the latest `Yap.app.zip` from [Releases](https://github.com/igaboo/yap/releases), unzip, and move to `/Applications`.
 
 **Build from source:**
 
 ```bash
-git clone https://github.com/igaboo/voicetype.git
-cd voicetype
+git clone https://github.com/igaboo/yap.git
+cd yap
 ./build.sh
-cp -r build/VoiceType.app /Applications/
-open /Applications/VoiceType.app
+cp -r build/Yap.app /Applications/
+open /Applications/Yap.app
 ```
 
 Requires macOS 12+ and Xcode Command Line Tools (`xcode-select --install`).

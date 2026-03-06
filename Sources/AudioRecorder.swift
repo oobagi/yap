@@ -5,7 +5,7 @@ class AudioRecorder {
     private var engine: AVAudioEngine?
     private var audioFile: AVAudioFile?
     let tempURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("voicetype_recording.wav")
+        .appendingPathComponent("yap_recording.wav")
 
     /// Called on main thread with per-band levels (array of 0.0-1.0) and overall RMS (0.0-1.0)
     var onLevelUpdate: ((Float) -> Void)?

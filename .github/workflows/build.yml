@@ -11,5 +11,5 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Build VoiceType.app
+      - name: Build Yap.app
         run: ./build.sh

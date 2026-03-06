@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_NAME="VoiceType"
+APP_NAME="Yap"
 BUILD_DIR="build"
 APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
 

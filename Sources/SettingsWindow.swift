@@ -195,7 +195,7 @@ class SettingsWindow: NSWindow {
             defer: false
         )
         
-        title = "VoiceType Settings"
+        title = "Yap Settings"
         isReleasedWhenClosed = false
         center()
         loadUI()
@@ -228,7 +228,7 @@ class SettingsWindow: NSWindow {
     
     static func configURL() -> URL {
         FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".config/voicetype/config.json")
+            .appendingPathComponent(".config/yap/config.json")
     }
     
     static func loadConfig() -> [String: Any] {

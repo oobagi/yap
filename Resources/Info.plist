@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleName</key>
-    <string>VoiceType</string>
+    <string>Yap</string>
     <key>CFBundleIdentifier</key>
-    <string>com.voicetype.app</string>
+    <string>com.yap.app</string>
     <key>CFBundleVersion</key>
     <string>1.0</string>
     <key>CFBundleShortVersionString</key>
@@ -13,7 +13,7 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleExecutable</key>
-    <string>VoiceType</string>
+    <string>Yap</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
@@ -21,8 +21,8 @@
     <key>LSUIElement</key>
     <true/>
     <key>NSMicrophoneUsageDescription</key>
-    <string>VoiceType needs microphone access to record your voice for transcription.</string>
+    <string>Yap needs microphone access to record your voice for transcription.</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>VoiceType uses on-device speech recognition to transcribe your voice.</string>
+    <string>Yap uses on-device speech recognition to transcribe your voice.</string>
 </dict>
 </plist>
