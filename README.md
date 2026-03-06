@@ -13,6 +13,10 @@
 
 ## Install
 
+**Download:** Grab the latest `VoiceType.app.zip` from [Releases](https://github.com/igaboo/voicetype/releases), unzip, and move to `/Applications`.
+
+**Build from source:**
+
 ```bash
 git clone https://github.com/igaboo/voicetype.git
 cd voicetype
@@ -22,6 +26,8 @@ open /Applications/VoiceType.app
 ```
 
 Requires macOS 12+ and Xcode Command Line Tools (`xcode-select --install`).
+
+On first launch, grant Microphone, Speech Recognition, and Accessibility permissions in System Settings.
 
 ## Setup
 
