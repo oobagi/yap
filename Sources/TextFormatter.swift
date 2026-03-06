@@ -204,6 +204,9 @@ class AudioTranscriber {
         self.model = model ?? provider.defaultModel
     }
     
+    /// Maximum number of retries for transient failures (timeouts, truncated responses)
+    private static let maxRetries = 2
+    
     /// Transcribe audio, optionally doing formatting in one shot (Gemini only)
     func transcribe(audioURL: URL, style: FormattingStyle? = nil, completion: @escaping (Result<String, Error>) -> Void) {
         guard let audioData = try? Data(contentsOf: audioURL) else {
@@ -218,17 +221,55 @@ class AudioTranscriber {
         
         log("Transcribing with \(provider.rawValue), model=\(model), audio=\(audioData.count) bytes, timeout=\(String(format: "%.0f", timeout))s")
         
-        switch provider {
-        case .none:
-            completion(.failure(FormatterError.unsupportedProvider))
-        case .gemini:
-            callGemini(audioData: audioData, style: style, timeout: timeout, completion: completion)
-        case .openai:
-            callOpenAITranscribe(audioData: audioData, timeout: timeout, completion: completion)
-        case .deepgram:
-            callDeepgram(audioData: audioData, timeout: timeout, completion: completion)
-        case .elevenlabs:
-            callElevenLabs(audioData: audioData, timeout: timeout, completion: completion)
+        transcribeWithRetry(audioData: audioData, style: style, timeout: timeout, attempt: 1, completion: completion)
+    }
+    
+    /// Internal retry wrapper — retries on timeout or truncated response
+    private func transcribeWithRetry(audioData: Data, style: FormattingStyle?, timeout: TimeInterval, attempt: Int, completion: @escaping (Result<String, Error>) -> Void) {
+        let singleAttempt: (@escaping (Result<String, Error>) -> Void) -> Void = { cb in
+            switch self.provider {
+            case .none:
+                cb(.failure(FormatterError.unsupportedProvider))
+            case .gemini:
+                self.callGemini(audioData: audioData, style: style, timeout: timeout, completion: cb)
+            case .openai:
+                self.callOpenAITranscribe(audioData: audioData, timeout: timeout, completion: cb)
+            case .deepgram:
+                self.callDeepgram(audioData: audioData, timeout: timeout, completion: cb)
+            case .elevenlabs:
+                self.callElevenLabs(audioData: audioData, timeout: timeout, completion: cb)
+            }
+        }
+        
+        singleAttempt { result in
+            switch result {
+            case .success:
+                completion(result)
+            case .failure(let error):
+                let isRetryable: Bool
+                if error is FormatterError {
+                    switch error as! FormatterError {
+                    case .truncatedResponse, .noResponse:
+                        isRetryable = true
+                    default:
+                        isRetryable = false
+                    }
+                } else {
+                    // URLSession timeout errors
+                    isRetryable = (error as NSError).code == NSURLErrorTimedOut
+                        || (error as NSError).code == NSURLErrorNetworkConnectionLost
+                }
+                
+                if isRetryable && attempt < Self.maxRetries {
+                    log("⚠️ Attempt \(attempt) failed (\(error.localizedDescription)), retrying (\(attempt + 1)/\(Self.maxRetries))...")
+                    // Small backoff before retry
+                    DispatchQueue.global().asyncAfter(deadline: .now() + Double(attempt) * 0.5) {
+                        self.transcribeWithRetry(audioData: audioData, style: style, timeout: timeout, attempt: attempt + 1, completion: completion)
+                    }
+                } else {
+                    completion(result)
+                }
+            }
         }
     }
     
@@ -264,9 +305,7 @@ class AudioTranscriber {
         makeRequest(request, label: "Gemini") { data in
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let candidates = json["candidates"] as? [[String: Any]],
-                  let content = candidates.first?["content"] as? [String: Any],
-                  let parts = content["parts"] as? [[String: Any]],
-                  let text = parts.first?["text"] as? String else {
+                  let candidate = candidates.first else {
                 if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                    let err = json["error"] as? [String: Any],
                    let msg = err["message"] as? String {
@@ -274,6 +313,20 @@ class AudioTranscriber {
                 }
                 return .failure(FormatterError.parseFailed)
             }
+            
+            // Check finishReason — anything other than STOP means truncated/blocked
+            let finishReason = candidate["finishReason"] as? String ?? "UNKNOWN"
+            if finishReason != "STOP" {
+                log("⚠️ Gemini finishReason: \(finishReason) (expected STOP)")
+                return .failure(FormatterError.truncatedResponse(reason: finishReason))
+            }
+            
+            guard let content = candidate["content"] as? [String: Any],
+                  let parts = content["parts"] as? [[String: Any]],
+                  let text = parts.first?["text"] as? String else {
+                return .failure(FormatterError.parseFailed)
+            }
+            
             return .success(self.extractJSON(from: text))
         } completion: { completion($0) }
     }
@@ -487,7 +540,20 @@ class TextFormatter {
             guard let data = data,
                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let candidates = json["candidates"] as? [[String: Any]],
-                  let content = candidates.first?["content"] as? [String: Any],
+                  let candidate = candidates.first else {
+                completion(.success(text))  // fall back to unformatted
+                return
+            }
+            
+            // Check finishReason — truncated formatting isn't usable
+            let finishReason = candidate["finishReason"] as? String ?? "UNKNOWN"
+            if finishReason != "STOP" {
+                log("⚠️ Gemini format finishReason: \(finishReason) — falling back to raw text")
+                completion(.success(text))
+                return
+            }
+            
+            guard let content = candidate["content"] as? [String: Any],
                   let parts = content["parts"] as? [[String: Any]],
                   let responseText = parts.first?["text"] as? String else {
                 completion(.success(text))
@@ -616,6 +682,7 @@ extension Data {
 enum FormatterError: LocalizedError {
     case invalidEndpoint, unsupportedProvider, audioReadFailed, noResponse, parseFailed
     case apiError(String)
+    case truncatedResponse(reason: String)
     
     var errorDescription: String? {
         switch self {
@@ -625,6 +692,7 @@ enum FormatterError: LocalizedError {
         case .noResponse: return "No response from API"
         case .parseFailed: return "Failed to parse API response"
         case .apiError(let msg): return "API error: \(msg)"
+        case .truncatedResponse(let reason): return "Response truncated (finishReason: \(reason))"
         }
     }
 }

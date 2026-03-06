@@ -459,6 +459,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 } else {
                     message = "API error"
                 }
+            case .truncatedResponse:
+                message = "Response cut off — try again"
             default:
                 message = fmtError.localizedDescription ?? "Something went wrong"
             }
