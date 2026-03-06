@@ -157,12 +157,14 @@ struct AudioReactiveBars: View {
             ForEach(0..<barCount, id: \.self) { index in
                 let center = CGFloat(barCount - 1) / 2.0
                 let distFromCenter = abs(CGFloat(index) - center) / center
-                let positionScale = 1.0 - (distFromCenter * 0.5)
+                let positionScale = 1.0 - (distFromCenter * 0.35)
                 
-                let boosted = pow(level, 0.5)
+                let boosted = pow(level, 0.4)
                 let targetHeight = 6.0 + 18.0 * boosted * positionScale
-                let seed = sin(Double(index) * 2.5 + Double(level) * 8.0)
-                let variation = CGFloat(seed) * 3.5 * boosted
+                // More variation per bar — each bar feels independent
+                let seed1 = sin(Double(index) * 2.5 + Double(level) * 10.0)
+                let seed2 = cos(Double(index) * 1.8 + Double(level) * 6.0)
+                let variation = CGFloat(seed1 * 3.0 + seed2 * 2.0) * boosted
                 let barHeight = max(6.0, min(24.0, targetHeight + variation))
                 
                 RoundedRectangle(cornerRadius: 2)
@@ -181,13 +183,15 @@ struct WaveAnimationBars: View {
     
     @State private var displayLevel: CGFloat = 1
     @State private var waveStrength: CGFloat = 0
+    @State private var startTime: Date? = nil
     
     var body: some View {
         TimelineView(.animation) { timeline in
-            let phase = timeline.date.timeIntervalSinceReferenceDate
-            let t = phase.truncatingRemainder(dividingBy: 1.0) / 1.0
-            // Sweep from -2 to barCount+1 so the wave enters from off-left and exits off-right
-            let waveCenter = -2.0 + t * (Double(barCount) + 3.0)
+            let elapsed = startTime.map { timeline.date.timeIntervalSince($0) } ?? 0
+            // One full sweep takes 1.0s, wave travels from off-left (-2) to off-right (barCount+1)
+            let sweepRange = Double(barCount) + 3.0
+            let t = elapsed.truncatingRemainder(dividingBy: 1.0) / 1.0
+            let waveCenter = -2.0 + t * sweepRange
             
             HStack(spacing: 3) {
                 ForEach(0..<barCount, id: \.self) { index in
@@ -212,6 +216,7 @@ struct WaveAnimationBars: View {
             }
         }
         .onAppear {
+            startTime = Date()
             displayLevel = 1
             waveStrength = 0
             withAnimation(.easeOut(duration: 0.35)) {
