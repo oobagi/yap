@@ -122,7 +122,7 @@ class OverlayPanel: NSPanel {
     private func updateButtonTargets() {
         guard let pause = pauseTarget, let stop = stopTarget else { return }
         let cx = frame.width / 2   // 700 — horizontal center of 1400pt panel
-        let cy: CGFloat = 415      // pill center Y in panel coords (45pt above screen bottom)
+        let cy: CGFloat = 435      // pill center Y in panel coords
 
         // Mirror audioBounceFactor from OverlayView
         let scale: CGFloat
@@ -153,7 +153,7 @@ class OverlayPanel: NSPanel {
         default:
             if isExpanded {
                 // Expanded pill center = panel y 415
-                contentOverlay?.pillHitRegion = NSRect(x: cx - 40, y: 395, width: 80, height: 40)
+                contentOverlay?.pillHitRegion = NSRect(x: cx - 40, y: 415, width: 80, height: 40)
             } else {
                 // Minimized pill center ≈ panel y 385
                 contentOverlay?.pillHitRegion = NSRect(x: cx - 40, y: 371, width: 80, height: 28)
@@ -275,12 +275,11 @@ struct ShakeEffect: GeometryEffect {
     }
 }
 
-enum OnboardingStep: Hashable {
+indirect enum OnboardingStep: Hashable {
     case tryIt
-    case success(String)
-    case clickTip
-    case clickSuccess(String)
+    case nice(next: OnboardingStep)
     case doubleTapTip
+    case clickTip
     case apiTip
     case formattingTip
     case welcome
@@ -346,7 +345,14 @@ struct OverlayView: View {
 
             VStack(spacing: 0) {
                 Spacer()
-                    .frame(height: 265)
+
+                VStack(spacing: 8) {
+                    if let step = state.onboardingStep,
+                       state.mode == .idle || state.mode == .noSpeech {
+                        OnboardingCardView(step: step, hotkeyLabel: state.hotkeyLabel)
+                            .id(step)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
+                    }
 
                 ZStack {
                     if isActive {
@@ -379,7 +385,7 @@ struct OverlayView: View {
                     }
                 }
                 .onTapGesture {
-                    guard state.mode != .processing else { return }
+                    guard state.mode != .recording, state.mode != .processing else { return }
                     state.onClickToRecord?()
                 }
                 .scaleEffect(pillScale * audioBounceFactor * (state.isPressed ? 0.85 : 1.0) * (state.mode == .processing ? 0.8 : 1.0))
@@ -393,16 +399,6 @@ struct OverlayView: View {
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: state.isPaused)
                 .animation(.spring(response: 0.3, dampingFraction: 0.7), value: state.isHovering)
                 .overlay(alignment: .bottom) {
-                    if let step = state.onboardingStep,
-                       state.mode == .idle || state.mode == .noSpeech {
-                        OnboardingCardView(step: step, hotkeyLabel: state.hotkeyLabel)
-                            .id(step)
-                            .fixedSize()
-                            .offset(y: -56)
-                            .transition(.opacity.combined(with: .offset(y: 8)))
-                    }
-                }
-                .overlay(alignment: .bottom) {
                     if state.isHovering && isMinimized {
                         Text("Click to start transcribing")
                             .font(.system(size: 13, weight: .semibold))
@@ -413,8 +409,12 @@ struct OverlayView: View {
                             .transition(.opacity.combined(with: .offset(y: 4)))
                     }
                 }
+                } // end inner VStack
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.onboardingStep)
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.mode)
 
                 Spacer()
+                    .frame(height: 415)
             }
         }
         .onChange(of: state.shakeToken) { _ in
@@ -438,7 +438,7 @@ struct OverlayView: View {
     private var showHoldPromptInPill: Bool {
         guard let step = state.onboardingStep, state.mode == .idle || state.mode == .noSpeech else { return false }
         switch step {
-        case .success, .clickSuccess, .apiTip, .formattingTip, .welcome:
+        case .apiTip, .formattingTip, .welcome:
             return true
         default:
             return false
@@ -610,65 +610,69 @@ struct OnboardingCardView: View {
     let step: OnboardingStep
     var hotkeyLabel: String = "fn"
 
+    static let niceMessages = [
+        "Nice! 🎉", "Nailed it! ✨", "Sounds good! 👌",
+        "Got it! 🙌", "Perfect! 🎯", "Love it! 💫",
+    ]
+
     var body: some View {
-        Group {
-            switch step {
-            case .tryIt:
-                HStack(spacing: 6) {
-                    Text("Hold")
-                    KeyCapView(label: hotkeyLabel)
-                    Text("and speak to get started")
+        cardContent
+            .font(.system(size: 15, weight: .medium))
+            .foregroundColor(.white)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .fixedSize()
+            .background(
+                ZStack {
+                    RoundedRectangle(cornerRadius: 25).fill(Color.black.opacity(0.75))
+                    RoundedRectangle(cornerRadius: 25).fill(.thinMaterial)
                 }
-            case .success(let text):
-                VStack(spacing: 6) {
-                    Text("You said:")
-                        .foregroundColor(.white.opacity(0.6))
-                    Text("\"\(text)\"")
-                        .italic()
-                        .multilineTextAlignment(.center)
-                }
-            case .clickTip:
-                Text("Now try clicking the pill to record")
-                    .multilineTextAlignment(.center)
-            case .clickSuccess(let text):
-                VStack(spacing: 6) {
-                    Text("You said:")
-                        .foregroundColor(.white.opacity(0.6))
-                    Text("\"\(text)\"")
-                        .italic()
-                        .multilineTextAlignment(.center)
-                }
-            case .doubleTapTip:
-                HStack(spacing: 6) {
-                    Text("Now try double-tapping")
-                    KeyCapView(label: hotkeyLabel)
-                    Text("to record")
-                }
-            case .apiTip:
-                Text("Add an API key in the menu bar for better transcription")
-                    .multilineTextAlignment(.center)
-            case .formattingTip:
-                Text("Enable formatting in Settings to clean up grammar and punctuation automatically")
-                    .multilineTextAlignment(.center)
-            case .welcome:
-                Text("You're all set — enjoy! 🎉")
-                    .multilineTextAlignment(.center)
-            case .speakTip:
-                HStack(spacing: 6) {
-                    Text("Didn't catch that — speak up while holding")
-                    KeyCapView(label: hotkeyLabel)
-                }
-            case .holdTip:
-                HStack(spacing: 6) {
-                    Text("Hold")
-                    KeyCapView(label: hotkeyLabel)
-                    Text("— don't just tap it")
-                }
+                .shadow(color: .black.opacity(0.35), radius: 16, y: 4)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 25)
+                    .strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+            )
+    }
+
+    @ViewBuilder
+    private var cardContent: some View {
+        switch step {
+        case .tryIt:
+            HStack(spacing: 6) {
+                Text("Hold")
+                KeyCapView(label: hotkeyLabel)
+                Text("and speak — Yap transcribes it")
+            }
+        case .nice:
+            Text(OnboardingCardView.niceMessages.randomElement()!)
+        case .doubleTapTip:
+            HStack(spacing: 6) {
+                Text("Double-tap")
+                KeyCapView(label: hotkeyLabel)
+                Text("for hands-free transcription")
+            }
+        case .clickTip:
+            Text("Click the pill for hands-free transcription")
+        case .apiTip:
+            Text("Add an API key in the menu bar for better transcription")
+        case .formattingTip:
+            Text("Enable formatting in Settings to clean up grammar and punctuation automatically")
+        case .welcome:
+            Text("You're all set — enjoy! 🎉")
+        case .speakTip:
+            HStack(spacing: 6) {
+                Text("Didn't catch that — speak up while holding")
+                KeyCapView(label: hotkeyLabel)
+            }
+        case .holdTip:
+            HStack(spacing: 6) {
+                Text("Hold")
+                KeyCapView(label: hotkeyLabel)
+                Text("— don't just tap it")
             }
         }
-        .font(.system(size: 15, weight: .medium))
-        .foregroundColor(.white)
-        .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
     }
 }
 

@@ -267,14 +267,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         let step = overlayPanel.currentOnboardingStep
         log("Advancing onboarding from: \(String(describing: step))")
         switch step {
-        case .success:
-            overlayPanel.advanceOnboarding(to: .clickTip)
+        case .doubleTapTip:
+            overlayPanel.advanceOnboarding(to: .apiTip) // fallback; normally double-tap does this
         case .clickTip:
             overlayPanel.advanceOnboarding(to: .apiTip) // fallback; normally click does this
-        case .clickSuccess:
-            overlayPanel.advanceOnboarding(to: .doubleTapTip)
-        case .doubleTapTip:
-            overlayPanel.advanceOnboarding(to: .apiTip) // fallback; normally recording does this
         case .apiTip:
             overlayPanel.advanceOnboarding(to: .formattingTip)
         case .formattingTip:
@@ -322,7 +318,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 // tipDismissWork cancelled below; fall through to recording
 
             // Confirmation steps: fn hold advances onboarding, never starts recording
-            case .success, .clickSuccess, .apiTip, .formattingTip, .welcome:
+            case .apiTip, .formattingTip, .welcome:
                 log("Hold-to-confirm for: \(step)")
                 overlayPanel.pressDown()
                 let workItem = DispatchWorkItem { [weak self] in
@@ -617,15 +613,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
 
     private func pasteText(_ text: String) {
         pasteManager.paste(text)
+        let nextStep: OnboardingStep?
         if overlayPanel.currentOnboardingStep == .tryIt {
-            overlayPanel.advanceOnboarding(to: .success(text))
-            playSound("Submarine")
-        } else if overlayPanel.currentOnboardingStep == .clickTip {
-            overlayPanel.advanceOnboarding(to: .clickSuccess(text))
-            playSound("Submarine")
+            nextStep = .doubleTapTip
         } else if overlayPanel.currentOnboardingStep == .doubleTapTip {
-            overlayPanel.advanceOnboarding(to: .apiTip)
+            nextStep = .clickTip
+        } else if overlayPanel.currentOnboardingStep == .clickTip {
+            nextStep = .apiTip
+        } else {
+            nextStep = nil
+        }
+        if let next = nextStep {
+            overlayPanel.advanceOnboarding(to: .nice(next: next))
             playSound("Submarine")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, case .nice = self.overlayPanel.currentOnboardingStep else { return }
+                self.overlayPanel.advanceOnboarding(to: next)
+            }
         }
     }
 
