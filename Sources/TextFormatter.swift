@@ -171,23 +171,59 @@ enum FormattingProvider: String, CaseIterable {
     case gemini = "gemini"
     case openai = "openai"
     case anthropic = "anthropic"
-    
+    case groq = "groq"
+
     var label: String {
         switch self {
         case .none: return "None"
         case .gemini: return "Google Gemini"
         case .openai: return "OpenAI"
         case .anthropic: return "Anthropic"
+        case .groq: return "Groq"
         }
     }
-    
+
     var defaultModel: String {
         switch self {
         case .none: return ""
         case .gemini: return "gemini-2.5-flash"
         case .openai: return "gpt-4o-mini"
         case .anthropic: return "claude-haiku-4-5-20251001"
+        case .groq: return "llama-3.3-70b-versatile"
         }
+    }
+}
+
+// MARK: - Provider Options
+
+struct TranscriptionOptions {
+    // Deepgram
+    var dgSmartFormat: Bool = true
+    var dgKeywords: [String] = []
+    var dgLanguage: String = ""
+
+    // OpenAI
+    var oaiLanguage: String = ""
+    var oaiPrompt: String = ""
+
+    // Gemini
+    var geminiTemperature: Double = 0.0
+
+    // ElevenLabs
+    var elLanguageCode: String = ""
+
+    static func fromDefaults() -> TranscriptionOptions {
+        let d = UserDefaults.standard
+        var opts = TranscriptionOptions()
+        opts.dgSmartFormat = d.object(forKey: SettingsKey.dgSmartFormat) as? Bool ?? true
+        opts.dgLanguage = d.string(forKey: SettingsKey.dgLanguage) ?? ""
+        let kw = d.string(forKey: SettingsKey.dgKeywords) ?? ""
+        opts.dgKeywords = kw.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        opts.oaiLanguage = d.string(forKey: SettingsKey.oaiLanguage) ?? ""
+        opts.oaiPrompt = d.string(forKey: SettingsKey.oaiPrompt) ?? ""
+        opts.geminiTemperature = d.object(forKey: SettingsKey.geminiTemperature) as? Double ?? 0.0
+        opts.elLanguageCode = d.string(forKey: SettingsKey.elLanguageCode) ?? ""
+        return opts
     }
 }
 
@@ -197,11 +233,13 @@ class AudioTranscriber {
     let provider: TranscriptionProvider
     private let apiKey: String
     private let model: String
-    
-    init(provider: TranscriptionProvider, apiKey: String, model: String? = nil) {
+    let options: TranscriptionOptions
+
+    init(provider: TranscriptionProvider, apiKey: String, model: String? = nil, options: TranscriptionOptions = .fromDefaults()) {
         self.provider = provider
         self.apiKey = apiKey
         self.model = model ?? provider.defaultModel
+        self.options = options
     }
     
     /// Maximum number of retries for transient failures (timeouts, truncated responses)
@@ -297,7 +335,7 @@ class AudioTranscriber {
                     ["text": prompt]
                 ]
             ]],
-            "generationConfig": ["temperature": 0.0, "maxOutputTokens": 2048, "responseMimeType": "application/json"]
+            "generationConfig": ["temperature": options.geminiTemperature, "maxOutputTokens": 2048, "responseMimeType": "application/json"]
         ]
 
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
@@ -338,14 +376,18 @@ class AudioTranscriber {
             completion(.failure(FormatterError.invalidEndpoint))
             return
         }
-        
+
+        var fields = ["model": model]
+        if !options.oaiLanguage.isEmpty { fields["language"] = options.oaiLanguage }
+        if !options.oaiPrompt.isEmpty { fields["prompt"] = options.oaiPrompt }
+
         let boundary = UUID().uuidString
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = multipartBody(boundary: boundary, audioData: audioData, fields: ["model": model])
+        request.httpBody = multipartBody(boundary: boundary, audioData: audioData, fields: fields)
         
         makeRequest(request, label: "OpenAI") { data in
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -364,18 +406,25 @@ class AudioTranscriber {
     // MARK: Deepgram
     
     private func callDeepgram(audioData: Data, timeout: TimeInterval, completion: @escaping (Result<String, Error>) -> Void) {
-        guard let url = URL(string: "https://api.deepgram.com/v1/listen?model=\(model)&smart_format=true&punctuate=true") else {
+        var params = ["model=\(model)"]
+        if options.dgSmartFormat { params.append("smart_format=true") }
+        if !options.dgLanguage.isEmpty { params.append("language=\(options.dgLanguage)") }
+        for kw in options.dgKeywords {
+            params.append("keywords=\(kw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? kw)")
+        }
+
+        guard let url = URL(string: "https://api.deepgram.com/v1/listen?\(params.joined(separator: "&"))") else {
             completion(.failure(FormatterError.invalidEndpoint))
             return
         }
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("Token \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("audio/wav", forHTTPHeaderField: "Content-Type")
         request.httpBody = audioData
-        
+
         makeRequest(request, label: "Deepgram") { data in
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let results = json["results"] as? [String: Any],
@@ -406,8 +455,10 @@ class AudioTranscriber {
         request.timeoutInterval = timeout
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        request.httpBody = multipartBody(boundary: boundary, audioData: audioData, fields: ["model_id": model])
-        
+        var fields = ["model_id": model]
+        if !options.elLanguageCode.isEmpty { fields["language_code"] = options.elLanguageCode }
+        request.httpBody = multipartBody(boundary: boundary, audioData: audioData, fields: fields)
+
         makeRequest(request, label: "ElevenLabs") { data in
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let text = json["text"] as? String {
@@ -520,6 +571,8 @@ class TextFormatter {
             callOpenAI(text: text, completion: completion)
         case .anthropic:
             callAnthropic(text: text, completion: completion)
+        case .groq:
+            callGroq(text: text, completion: completion)
         }
     }
     
@@ -663,8 +716,48 @@ class TextFormatter {
         }.resume()
     }
     
+    // MARK: Groq
+
+    private func callGroq(text: String, completion: @escaping (Result<String, Error>) -> Void) {
+        guard let url = URL(string: "https://api.groq.com/openai/v1/chat/completions") else {
+            completion(.failure(FormatterError.invalidEndpoint))
+            return
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": style.prompt],
+                ["role": "user", "content": "<input>\(text)</input>"]
+            ],
+            "max_tokens": 2048,
+            "temperature": 0.3
+        ]
+
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error = error { completion(.failure(error)); return }
+            guard let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                completion(.success(text))
+                return
+            }
+            completion(.success(Self.extractJSON(from: content)))
+        }.resume()
+    }
+
     // MARK: Helpers
-    
+
     static func extractJSON(from text: String) -> String {
         var s = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip markdown code fences

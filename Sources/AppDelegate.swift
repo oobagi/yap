@@ -391,10 +391,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         let duration = Date().timeIntervalSince(recordingStart ?? Date())
         log("Duration: \(String(format: "%.1f", duration))s, peak: \(peakAudioLevel)")
 
-        // Too short = accidental tap
-        guard duration >= 1.2 else {
-            // Keep pill expanded and mic running for a smooth minimum duration
-            let remaining = max(0.5, 1.0 - duration)
+        // Too short = accidental tap (but if speech was detected, let it through)
+        guard duration >= 0.5 || peakAudioLevel >= 0.15 else {
+            // Show the hold tip quickly after a short tap
+            let remaining = max(0.15, 0.4 - duration)
             let work = DispatchWorkItem { [weak self] in
                 guard let self, self.state == .recording else { return }
                 self.shortTapCleanupWork = nil

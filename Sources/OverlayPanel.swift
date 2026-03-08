@@ -233,7 +233,7 @@ struct OverlayView: View {
     }
 
     private var audioBounceFactor: CGFloat {
-        guard state.mode == .recording else { return 1.0 }
+        guard state.mode == .recording, !state.isPaused else { return 1.0 }
         let level = min(CGFloat(state.audioLevel), 1.0)
         return 1.0 + pow(level, 1.5) * 0.25
     }
@@ -537,7 +537,7 @@ struct BarVisualizer: View {
 
     var body: some View {
         TimelineView(.animation(paused: !isProcessing)) { timeline in
-            let elapsed = waveStart.map { timeline.date.timeIntervalSince($0) } ?? 0
+            let elapsed = (isProcessing && waveStart != nil) ? timeline.date.timeIntervalSince(waveStart!) : 0.0
             let margin = 5.0
             let sweepRange = Double(barCount - 1) + margin * 2
             let t = elapsed.truncatingRemainder(dividingBy: 1.2) / 1.2
@@ -566,15 +566,16 @@ struct BarVisualizer: View {
 
                     let barHeight = min(28.0, max(minH, audioH + waveH))
 
-                    // Shimmer during processing
+                    // Shimmer during processing — bright at wave peak, dim at edges
                     let dimOpacity = 0.35
                     let brightOpacity = 0.95
                     let shimmer = dimOpacity + (brightOpacity - dimOpacity) * Double(wave) * Double(waveStrength)
-                    let barOpacity = waveStrength > 0.01 ? shimmer : 0.9
+                    let barOpacity = isProcessing ? shimmer : 0.9
 
                     RoundedRectangle(cornerRadius: 1.5)
                         .fill(Color.white.opacity(barOpacity))
                         .frame(width: 3, height: barHeight)
+                        .animation(.interpolatingSpring(stiffness: 280, damping: 18), value: bandLevel)
                 }
             }
         }
@@ -588,7 +589,7 @@ struct BarVisualizer: View {
             }
         }
         .onChange(of: isProcessing) { processing in
-            if processing && !wasProcessing {
+            if processing {
                 waveStart = Date()
                 withAnimation(.easeOut(duration: 0.35)) {
                     audioDecay = 0
@@ -596,12 +597,11 @@ struct BarVisualizer: View {
                 withAnimation(.easeIn(duration: 0.35).delay(0.15)) {
                     waveStrength = 1
                 }
-            } else if !processing {
+            } else {
+                waveStart = nil
                 audioDecay = 1
                 waveStrength = 0
-                waveStart = nil
             }
-            wasProcessing = processing
         }
     }
 }
