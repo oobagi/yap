@@ -36,7 +36,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     private var isEnabled = true
     private var enableMenuItem: NSMenuItem!
     private var peakAudioLevel: Float = 0
-    private var handsFreeEntryTime: Date?
+    private var ignorePendingKeyUp = false
+
     private var shortTapCleanupWork: DispatchWorkItem?
     private var chimeWorkItem: DispatchWorkItem?
     private var onboardingHoldWork: DispatchWorkItem?
@@ -57,6 +58,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         player.play()
     }
     private var tipDismissWork: DispatchWorkItem?
+    /// The onboarding step that was active before a transient tip (.speakTip/.holdTip) appeared.
+    /// Used to enforce the same input restrictions during the tip as before it.
+    private var preTipOnboardingStep: OnboardingStep? = nil
     
     // Separate transcription and formatting engines
     private var audioTranscriber: AudioTranscriber?
@@ -70,6 +74,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         setupHotkey()
         setupEngines()
         preloadSounds()
+        overlayPanel.setOnClickToRecord { [weak self] in self?.startClickRecording() }
         overlayPanel.orderFront(nil)
         startOnboardingIfNeeded()
         log("Setup complete — ready")
@@ -263,7 +268,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         log("Advancing onboarding from: \(String(describing: step))")
         switch step {
         case .success:
-            overlayPanel.advanceOnboarding(to: .apiTip)
+            overlayPanel.advanceOnboarding(to: .clickTip)
+        case .clickTip:
+            overlayPanel.advanceOnboarding(to: .apiTip) // fallback; normally click does this
+        case .clickSuccess:
+            overlayPanel.advanceOnboarding(to: .doubleTapTip)
+        case .doubleTapTip:
+            overlayPanel.advanceOnboarding(to: .apiTip) // fallback; normally recording does this
         case .apiTip:
             overlayPanel.advanceOnboarding(to: .formattingTip)
         case .formattingTip:
@@ -286,10 +297,32 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     private func startRecording() {
         log("Key down — starting recording")
 
-        // Hold-to-confirm only for actual onboarding confirmation screens
+        // Onboarding state machine: each step defines which fn-key actions are permitted
         if let step = overlayPanel.currentOnboardingStep {
             switch step {
-            case .success, .apiTip, .formattingTip, .welcome:
+
+            // Click-only and double-tap-only steps: fn key fully blocked
+            case .clickTip, .doubleTapTip:
+                return
+
+            // Transient tip steps: enforce the same fn-key rules as the step that caused the tip
+            case .speakTip, .holdTip:
+                let onboardingComplete = UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete)
+                if !onboardingComplete {
+                    // Block fn key if the pre-tip step didn't allow it
+                    switch preTipOnboardingStep {
+                    case .clickTip, .doubleTapTip: return
+                    default: break
+                    }
+                    overlayPanel.advanceOnboarding(to: preTipOnboardingStep ?? .tryIt)
+                } else {
+                    overlayPanel.completeOnboarding()
+                }
+                preTipOnboardingStep = nil
+                // tipDismissWork cancelled below; fall through to recording
+
+            // Confirmation steps: fn hold advances onboarding, never starts recording
+            case .success, .clickSuccess, .apiTip, .formattingTip, .welcome:
                 log("Hold-to-confirm for: \(step)")
                 overlayPanel.pressDown()
                 let workItem = DispatchWorkItem { [weak self] in
@@ -304,28 +337,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 onboardingHoldWork = workItem
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
                 return
+
+            // .tryIt: fn hold starts normal recording
             default:
-                break // .tryIt, .speakTip, .holdTip — fall through to start recording
+                break
             }
         }
 
         // Cancel any pending tip/error dismiss timers
         tipDismissWork?.cancel()
         tipDismissWork = nil
-
-        // Clear transient tip steps so the UI resets cleanly
-        if let step = overlayPanel.currentOnboardingStep {
-            switch step {
-            case .speakTip, .holdTip:
-                if UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) {
-                    overlayPanel.completeOnboarding()
-                } else {
-                    overlayPanel.advanceOnboarding(to: .tryIt)
-                }
-            default:
-                break
-            }
-        }
 
         guard isEnabled, state == .idle else {
             log("Skipped: enabled=\(isEnabled) state=\(state)")
@@ -376,10 +397,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
             return
         }
 
-        // In hands-free mode, fn release stops recording (ignore the entry release)
+        // In hands-free mode, ignore the key-up only if fn was already held when we entered
         if state == .handsFreeRecording || state == .handsFreePaused {
-            if let entry = handsFreeEntryTime, Date().timeIntervalSince(entry) < 0.5 {
-                handsFreeEntryTime = nil
+            if ignorePendingKeyUp {
+                ignorePendingKeyUp = false
                 return
             }
             stopHandsFreeRecording()
@@ -563,17 +584,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     }
     
     private func showTip(_ step: OnboardingStep) {
+        // Capture which onboarding step we're on *before* the tip overwrites it.
+        // Saved as an instance property so input handlers can enforce the same restrictions.
+        let preTipStep = overlayPanel.currentOnboardingStep
+        preTipOnboardingStep = preTipStep
         state = .idle
         updateIcon(.idle)
         overlayPanel.showNoSpeech()
         overlayPanel.advanceOnboarding(to: step)
         tipDismissWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard self?.overlayPanel.currentOnboardingStep == step else { return }
-            self?.overlayPanel.dismiss()
-            self?.restoreOnboardingIfNeeded()
+            guard let self, self.overlayPanel.currentOnboardingStep == step else { return }
+            self.preTipOnboardingStep = nil
+            self.overlayPanel.dismiss()
             if UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) {
-                self?.overlayPanel.completeOnboarding()
+                self.overlayPanel.completeOnboarding()
+            } else {
+                let restoreTo: OnboardingStep
+                switch preTipStep {
+                case .clickTip:    restoreTo = .clickTip
+                case .doubleTapTip: restoreTo = .doubleTapTip
+                default:           restoreTo = .tryIt
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    self.overlayPanel.advanceOnboarding(to: restoreTo)
+                }
             }
         }
         tipDismissWork = work
@@ -585,6 +620,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         if overlayPanel.currentOnboardingStep == .tryIt {
             overlayPanel.advanceOnboarding(to: .success(text))
             playSound("Submarine")
+        } else if overlayPanel.currentOnboardingStep == .clickTip {
+            overlayPanel.advanceOnboarding(to: .clickSuccess(text))
+            playSound("Submarine")
+        } else if overlayPanel.currentOnboardingStep == .doubleTapTip {
+            overlayPanel.advanceOnboarding(to: .apiTip)
+            playSound("Submarine")
         }
     }
 
@@ -595,28 +636,139 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         restoreOnboardingIfNeeded()
     }
 
+    // MARK: - Click-to-Record
+
+    private func startClickRecording() {
+        guard isEnabled else { return }
+        let step = overlayPanel.currentOnboardingStep
+        let onboardingComplete = UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete)
+        let onClickTip = step == .clickTip
+        // Allow click during a transient tip only if the step that caused it also allowed clicking
+        let onTransientTip = (step == .speakTip || step == .holdTip)
+            && (onboardingComplete || preTipOnboardingStep == .clickTip)
+        guard onboardingComplete || onClickTip || onTransientTip else { return }
+
+        // If already in hold-to-record, convert to hands-free so the key can be released
+        if state == .recording {
+            log("Pill clicked during hold-recording — converting to hands-free")
+            startHandsFreeRecording()
+            return
+        }
+
+        // If in hands-free recording/paused, stop the current session and fall through to restart
+        if state == .handsFreeRecording || state == .handsFreePaused {
+            log("Pill clicked during hands-free — stopping and restarting")
+            audioRecorder.cancel()
+            chimeWorkItem = nil
+            overlayPanel.contractHandsFree()
+            state = .idle
+            updateIcon(.idle)
+        }
+
+        guard state == .idle else {
+            log("Skipped pill click: state=\(state)")
+            return
+        }
+        log("Pill clicked — starting hands-free recording")
+
+        // Cancel any pending tip/error dismiss timers before taking over the UI
+        tipDismissWork?.cancel()
+        tipDismissWork = nil
+
+        // If interrupted a transient tip, dismiss it and restore to the pre-tip step
+        if let s = overlayPanel.currentOnboardingStep, s == .speakTip || s == .holdTip {
+            if !UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) {
+                overlayPanel.advanceOnboarding(to: preTipOnboardingStep ?? .tryIt)
+            } else {
+                overlayPanel.completeOnboarding()
+            }
+            preTipOnboardingStep = nil
+        }
+
+        state = .recording
+        recordingStart = Date()
+        peakAudioLevel = 0
+        updateIcon(.recording)
+        overlayPanel.showRecording()
+
+        audioRecorder.onLevelUpdate = { [weak self] level in
+            self?.overlayPanel.updateLevel(level)
+            if level > (self?.peakAudioLevel ?? 0) {
+                self?.peakAudioLevel = level
+            }
+        }
+        audioRecorder.onBandLevels = { [weak self] bands in
+            self?.overlayPanel.updateBandLevels(bands)
+        }
+
+        do {
+            try audioRecorder.start()
+            playSound("Blow")
+
+            // Immediately enter hands-free mode (fn not held — no key-up to ignore)
+            state = .handsFreeRecording
+            ignorePendingKeyUp = false
+            overlayPanel.showHandsFreeRecording(
+                onPauseResume: { [weak self] in self?.toggleHandsFreePause() },
+                onStop: { [weak self] in self?.stopHandsFreeRecording() }
+            )
+        } catch {
+            log("Recording failed: \(error)")
+            state = .idle
+            updateIcon(.idle)
+            overlayPanel.dismiss()
+        }
+    }
+
     // MARK: - Hands-Free Recording
 
     private func startHandsFreeRecording() {
         log("Double-tap — entering hands-free mode")
 
-        // Cancel pending short-tap cleanup from the first tap
         shortTapCleanupWork?.cancel()
         shortTapCleanupWork = nil
 
-        // Must already be recording (from the first tap's onKeyDown)
-        guard state == .recording else { return }
+        let onDoubleTapTip = overlayPanel.currentOnboardingStep == .doubleTapTip
+        guard UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) || onDoubleTapTip else { return }
 
-        // Don't allow hands-free during onboarding
-        guard UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) else { return }
-
-        state = .handsFreeRecording
-        handsFreeEntryTime = Date()
-
-        overlayPanel.showHandsFreeRecording(
-            onPauseResume: { [weak self] in self?.toggleHandsFreePause() },
-            onStop: { [weak self] in self?.stopHandsFreeRecording() }
-        )
+        if state == .recording {
+            // Normal path: first tap started recording, convert it to hands-free
+            state = .handsFreeRecording
+            ignorePendingKeyUp = hotkeyManager.isHeld
+            overlayPanel.showHandsFreeRecording(
+                onPauseResume: { [weak self] in self?.toggleHandsFreePause() },
+                onStop: { [weak self] in self?.stopHandsFreeRecording() }
+            )
+        } else if state == .idle && onDoubleTapTip {
+            // doubleTapTip path: fn key was blocked on first tap, so start recorder now
+            guard isEnabled else { return }
+            recordingStart = Date()
+            peakAudioLevel = 0
+            updateIcon(.recording)
+            overlayPanel.showRecording()
+            audioRecorder.onLevelUpdate = { [weak self] level in
+                self?.overlayPanel.updateLevel(level)
+                if level > (self?.peakAudioLevel ?? 0) { self?.peakAudioLevel = level }
+            }
+            audioRecorder.onBandLevels = { [weak self] bands in
+                self?.overlayPanel.updateBandLevels(bands)
+            }
+            do {
+                try audioRecorder.start()
+                state = .handsFreeRecording
+                ignorePendingKeyUp = hotkeyManager.isHeld
+                overlayPanel.showHandsFreeRecording(
+                    onPauseResume: { [weak self] in self?.toggleHandsFreePause() },
+                    onStop: { [weak self] in self?.stopHandsFreeRecording() }
+                )
+                playSound("Blow")
+            } catch {
+                log("Recording failed: \(error)")
+                state = .idle
+                updateIcon(.idle)
+                overlayPanel.dismiss()
+            }
+        }
     }
 
     private func toggleHandsFreePause() {
@@ -675,6 +827,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         if step == .tryIt || step == .speakTip || step == .holdTip {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 self?.overlayPanel.advanceOnboarding(to: .tryIt)
+            }
+        } else if step == .clickTip {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.overlayPanel.advanceOnboarding(to: .clickTip)
+            }
+        } else if step == .doubleTapTip {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.overlayPanel.advanceOnboarding(to: .doubleTapTip)
             }
         }
     }

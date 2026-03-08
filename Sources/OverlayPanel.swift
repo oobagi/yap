@@ -8,13 +8,20 @@ class ClickTargetView: NSView {
     override func mouseDown(with event: NSEvent) { onClick?() }
 }
 
-/// Content view that passes clicks through except on ClickTargetViews.
+/// Content view that passes clicks through except on ClickTargetViews and the pill region.
 class OverlayContentView: NSView {
+    var pillHitRegion: NSRect = .zero
+
     override func hitTest(_ point: NSPoint) -> NSView? {
+        // Pause/stop ClickTargetViews always take priority
         for subview in subviews.reversed() {
             guard subview is ClickTargetView else { continue }
             let local = convert(point, to: subview)
             if subview.bounds.contains(local) { return subview }
+        }
+        // Forward pill-area clicks to the hosting view so SwiftUI gestures fire naturally
+        if pillHitRegion.contains(point) {
+            return super.hitTest(point)
         }
         return nil
     }
@@ -27,6 +34,7 @@ class OverlayPanel: NSPanel {
     private var errorDismissWork: DispatchWorkItem?
     private var pauseTarget: ClickTargetView?
     private var stopTarget: ClickTargetView?
+    private var contentOverlay: OverlayContentView?
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -55,6 +63,7 @@ class OverlayPanel: NSPanel {
         hidesOnDeactivate = false
 
         let container = OverlayContentView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        contentOverlay = container
 
         let hostingView = NSHostingView(rootView:
             OverlayView(state: overlayState)
@@ -75,6 +84,7 @@ class OverlayPanel: NSPanel {
         stopTarget = stop
 
         contentView = container
+        updatePillTarget()
     }
     
     func showRecording() {
@@ -86,13 +96,13 @@ class OverlayPanel: NSPanel {
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)) {
             overlayState.mode = .recording
         }
+        updatePillTarget()
     }
 
     func showHandsFreeRecording(onPauseResume: @escaping () -> Void, onStop: @escaping () -> Void) {
         overlayState.onPauseResume = onPauseResume
         overlayState.onStop = onStop
         overlayState.isPaused = false
-        overlayState.onboardingStep = nil
         overlayState.isHandsFree = true
         updateButtonTargets()
     }
@@ -133,6 +143,24 @@ class OverlayPanel: NSPanel {
                              width: targetRadius * 2, height: targetRadius * 2)
     }
 
+    /// Update the pill hit region so SwiftUI tap gestures reach the correct pill position.
+    private func updatePillTarget() {
+        let cx = frame.width / 2  // 700
+        let isExpanded = overlayState.mode != .idle || overlayState.onboardingStep != nil
+        switch overlayState.mode {
+        case .processing:
+            contentOverlay?.pillHitRegion = .zero
+        default:
+            if isExpanded {
+                // Expanded pill center = panel y 415
+                contentOverlay?.pillHitRegion = NSRect(x: cx - 40, y: 395, width: 80, height: 40)
+            } else {
+                // Minimized pill center ≈ panel y 385
+                contentOverlay?.pillHitRegion = NSRect(x: cx - 40, y: 371, width: 80, height: 28)
+            }
+        }
+    }
+
     func updateBandLevels(_ levels: [Float]) {
         overlayState.bandLevels = levels
     }
@@ -151,10 +179,12 @@ class OverlayPanel: NSPanel {
         overlayState.onPauseResume = nil
         overlayState.onStop = nil
         overlayState.mode = .processing
+        updatePillTarget()
     }
 
     func showError(_ message: String) {
         overlayState.mode = .error(message)
+        updatePillTarget()
         errorDismissWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             self?.dismiss()
@@ -171,6 +201,7 @@ class OverlayPanel: NSPanel {
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.35)) {
             overlayState.mode = .idle
         }
+        updatePillTarget()
     }
 
     var currentOnboardingStep: OnboardingStep? {
@@ -181,6 +212,7 @@ class OverlayPanel: NSPanel {
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)) {
             overlayState.onboardingStep = step
         }
+        updatePillTarget()
     }
 
     func setHotkeyLabel(_ label: String) {
@@ -214,6 +246,11 @@ class OverlayPanel: NSPanel {
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.35)) {
             overlayState.onboardingStep = nil
         }
+        updatePillTarget()
+    }
+
+    func setOnClickToRecord(_ callback: @escaping () -> Void) {
+        overlayState.onClickToRecord = callback
     }
 
 }
@@ -241,6 +278,9 @@ struct ShakeEffect: GeometryEffect {
 enum OnboardingStep: Hashable {
     case tryIt
     case success(String)
+    case clickTip
+    case clickSuccess(String)
+    case doubleTapTip
     case apiTip
     case formattingTip
     case welcome
@@ -258,8 +298,10 @@ class OverlayState: ObservableObject {
     @Published var isPressed: Bool = false
     @Published var isHandsFree: Bool = false
     @Published var isPaused: Bool = false
+    @Published var isHovering: Bool = false
     var onPauseResume: (() -> Void)?
     var onStop: (() -> Void)?
+    var onClickToRecord: (() -> Void)?
     var isOnboarding: Bool { onboardingStep != nil }
 }
 
@@ -271,6 +313,7 @@ struct OverlayView: View {
 
     private var isActive: Bool { state.mode != .idle || state.isOnboarding }
     private var isExpanded: Bool { state.mode != .idle || state.isOnboarding }
+    private var isMinimized: Bool { state.mode == .idle && !state.isOnboarding }
 
     private var gradientEnergy: CGFloat {
         switch state.mode {
@@ -279,9 +322,12 @@ struct OverlayView: View {
         case .processing:
             return 0.6
         default:
+            if state.isHovering { return 0.15 }
             return state.isOnboarding ? 0.3 : 0.4
         }
     }
+
+    private var showGradient: Bool { isExpanded || state.isHovering }
 
     private var audioBounceFactor: CGFloat {
         guard state.mode == .recording, !state.isPaused else { return 1.0 }
@@ -291,10 +337,10 @@ struct OverlayView: View {
 
     var body: some View {
         ZStack {
-            if isExpanded {
+            if showGradient {
                 LavaLampBackground(energy: gradientEnergy)
                     .allowsHitTesting(false)
-                    .transition(.opacity)
+                    .transition(.opacity.combined(with: .offset(y: 60)))
                     .animation(.easeInOut(duration: 0.8), value: gradientEnergy)
             }
 
@@ -325,7 +371,18 @@ struct OverlayView: View {
                     Capsule()
                         .strokeBorder(Color.white.opacity(isExpanded ? 0.3 : 0.35), lineWidth: isExpanded ? 1 : 1.5)
                 )
-                .scaleEffect((isExpanded ? 1.0 : 0.5) * audioBounceFactor * (state.isPressed ? 0.85 : 1.0) * (state.mode == .processing ? 0.8 : 1.0))
+                .contentShape(Capsule())
+                .onHover { hovering in
+                    guard isMinimized else { return }
+                    withAnimation(.easeOut(duration: 0.35)) {
+                        state.isHovering = hovering
+                    }
+                }
+                .onTapGesture {
+                    guard state.mode != .processing else { return }
+                    state.onClickToRecord?()
+                }
+                .scaleEffect(pillScale * audioBounceFactor * (state.isPressed ? 0.85 : 1.0) * (state.mode == .processing ? 0.8 : 1.0))
                 .opacity(state.isPressed ? 0.7 : 1.0)
                 .offset(y: isExpanded ? 0 : 40)
                 .modifier(ShakeEffect(progress: shakeProgress))
@@ -334,6 +391,7 @@ struct OverlayView: View {
                 .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.mode)
                 .animation(.spring(response: 0.35, dampingFraction: 0.8), value: state.isHandsFree)
                 .animation(.spring(response: 0.3, dampingFraction: 0.8), value: state.isPaused)
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: state.isHovering)
                 .overlay(alignment: .bottom) {
                     if let step = state.onboardingStep,
                        state.mode == .idle || state.mode == .noSpeech {
@@ -342,6 +400,17 @@ struct OverlayView: View {
                             .fixedSize()
                             .offset(y: -56)
                             .transition(.opacity.combined(with: .offset(y: 8)))
+                    }
+                }
+                .overlay(alignment: .bottom) {
+                    if state.isHovering && isMinimized {
+                        Text("Click to start transcribing")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.6), radius: 6, y: 2)
+                            .fixedSize()
+                            .offset(y: -6)
+                            .transition(.opacity.combined(with: .offset(y: 4)))
                     }
                 }
 
@@ -354,12 +423,22 @@ struct OverlayView: View {
                 shakeProgress = 1
             }
         }
+        .onChange(of: state.mode) { _ in
+            if state.mode != .idle {
+                state.isHovering = false
+            }
+        }
+    }
+
+    private var pillScale: CGFloat {
+        if isExpanded { return 1.0 }
+        return state.isHovering ? 0.65 : 0.5
     }
 
     private var showHoldPromptInPill: Bool {
         guard let step = state.onboardingStep, state.mode == .idle || state.mode == .noSpeech else { return false }
         switch step {
-        case .success, .apiTip, .formattingTip, .welcome:
+        case .success, .clickSuccess, .apiTip, .formattingTip, .welcome:
             return true
         default:
             return false
@@ -455,6 +534,12 @@ struct OverlayView: View {
                     }
                     .frame(width: 52, height: 28)
                     .transition(.opacity)
+                } else if state.isHovering {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                        .frame(width: 28, height: 28)
+                        .transition(.opacity)
                 } else {
                     EmptyView()
                 }
@@ -541,6 +626,23 @@ struct OnboardingCardView: View {
                     Text("\"\(text)\"")
                         .italic()
                         .multilineTextAlignment(.center)
+                }
+            case .clickTip:
+                Text("Now try clicking the pill to record")
+                    .multilineTextAlignment(.center)
+            case .clickSuccess(let text):
+                VStack(spacing: 6) {
+                    Text("You said:")
+                        .foregroundColor(.white.opacity(0.6))
+                    Text("\"\(text)\"")
+                        .italic()
+                        .multilineTextAlignment(.center)
+                }
+            case .doubleTapTip:
+                HStack(spacing: 6) {
+                    Text("Now try double-tapping")
+                    KeyCapView(label: hotkeyLabel)
+                    Text("to record")
                 }
             case .apiTip:
                 Text("Add an API key in the menu bar for better transcription")
