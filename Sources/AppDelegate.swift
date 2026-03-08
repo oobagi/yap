@@ -289,33 +289,40 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     }
 
     // MARK: - Recording Flow
-    
+
+    /// The logical onboarding step for input gating. When the overlay shows a transient tip
+    /// (.speakTip / .holdTip), returns the step that caused the tip so that input restrictions
+    /// from the parent step are enforced regardless of the current visual state.
+    private var effectiveOnboardingStep: OnboardingStep? {
+        preTipOnboardingStep ?? overlayPanel.currentOnboardingStep
+    }
+
+    /// Dismiss any currently-showing transient tip (.speakTip / .holdTip) and restore the
+    /// overlay to the step that was active before the tip. No-op if not in a transient tip.
+    private func dismissTransientTip() {
+        guard let step = overlayPanel.currentOnboardingStep,
+              step == .speakTip || step == .holdTip else { return }
+        tipDismissWork?.cancel()
+        tipDismissWork = nil
+        if UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) {
+            overlayPanel.completeOnboarding()
+        } else {
+            overlayPanel.advanceOnboarding(to: preTipOnboardingStep ?? .tryIt)
+        }
+        preTipOnboardingStep = nil
+    }
+
     private func startRecording() {
         log("Key down — starting recording")
 
-        // Onboarding state machine: each step defines which fn-key actions are permitted
-        if let step = overlayPanel.currentOnboardingStep {
+        // Gate on the effective step — the parent step if we're inside a transient tip.
+        // This enforces input restrictions in all visual states, including error/tip overlays.
+        if let step = effectiveOnboardingStep {
             switch step {
 
-            // Click-only and double-tap-only steps: fn key fully blocked
+            // Click-only and double-tap-only: fn key fully blocked in every visual state
             case .clickTip, .doubleTapTip:
                 return
-
-            // Transient tip steps: enforce the same fn-key rules as the step that caused the tip
-            case .speakTip, .holdTip:
-                let onboardingComplete = UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete)
-                if !onboardingComplete {
-                    // Block fn key if the pre-tip step didn't allow it
-                    switch preTipOnboardingStep {
-                    case .clickTip, .doubleTapTip: return
-                    default: break
-                    }
-                    overlayPanel.advanceOnboarding(to: preTipOnboardingStep ?? .tryIt)
-                } else {
-                    overlayPanel.completeOnboarding()
-                }
-                preTipOnboardingStep = nil
-                // tipDismissWork cancelled below; fall through to recording
 
             // Confirmation steps: fn hold advances onboarding, never starts recording
             case .apiTip, .formattingTip, .welcome:
@@ -334,11 +341,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6, execute: workItem)
                 return
 
-            // .tryIt: fn hold starts normal recording
+            // .tryIt and any other permitted step: dismiss tip overlay if showing, then record
             default:
                 break
             }
         }
+
+        // Dismiss any transient tip and restore the overlay to the correct step
+        dismissTransientTip()
 
         // Cancel any pending tip/error dismiss timers
         tipDismissWork?.cancel()
@@ -644,13 +654,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
 
     private func startClickRecording() {
         guard isEnabled else { return }
-        let step = overlayPanel.currentOnboardingStep
         let onboardingComplete = UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete)
-        let onClickTip = step == .clickTip
-        // Allow click during a transient tip only if the step that caused it also allowed clicking
-        let onTransientTip = (step == .speakTip || step == .holdTip)
-            && (onboardingComplete || preTipOnboardingStep == .clickTip)
-        guard onboardingComplete || onClickTip || onTransientTip else { return }
+        // Use effective step so click is blocked on doubleTapTip even when a tip overlay is showing
+        guard onboardingComplete || effectiveOnboardingStep == .clickTip else { return }
 
         // If already in hold-to-record, convert to hands-free so the key can be released
         if state == .recording {
@@ -675,19 +681,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         }
         log("Pill clicked — starting hands-free recording")
 
-        // Cancel any pending tip/error dismiss timers before taking over the UI
+        // Dismiss any transient tip and restore the overlay to the correct step
+        dismissTransientTip()
         tipDismissWork?.cancel()
         tipDismissWork = nil
-
-        // If interrupted a transient tip, dismiss it and restore to the pre-tip step
-        if let s = overlayPanel.currentOnboardingStep, s == .speakTip || s == .holdTip {
-            if !UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) {
-                overlayPanel.advanceOnboarding(to: preTipOnboardingStep ?? .tryIt)
-            } else {
-                overlayPanel.completeOnboarding()
-            }
-            preTipOnboardingStep = nil
-        }
 
         state = .recording
         recordingStart = Date()
@@ -732,9 +729,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         shortTapCleanupWork?.cancel()
         shortTapCleanupWork = nil
 
-        let currentStep = overlayPanel.currentOnboardingStep
-        let onDoubleTapTip = currentStep == .doubleTapTip
-            || ((currentStep == .speakTip || currentStep == .holdTip) && preTipOnboardingStep == .doubleTapTip)
+        let onDoubleTapTip = effectiveOnboardingStep == .doubleTapTip
         guard UserDefaults.standard.bool(forKey: SettingsKey.onboardingComplete) || onDoubleTapTip else { return }
 
         if state == .recording {
@@ -747,14 +742,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
             )
         } else if state == .idle && onDoubleTapTip {
             // doubleTapTip path: fn key was blocked on first tap, so start recorder now.
-            // Also handles double-tap retry from a transient speakTip/holdTip caused by doubleTapTip.
+            // dismissTransientTip() restores currentOnboardingStep to .doubleTapTip so that
+            // any subsequent showTip call captures the correct preTipOnboardingStep.
+            dismissTransientTip()
             guard isEnabled else { return }
-            // If interrupting a transient tip, clean it up before taking over the UI
-            if currentStep == .speakTip || currentStep == .holdTip {
-                tipDismissWork?.cancel()
-                tipDismissWork = nil
-                preTipOnboardingStep = nil
-            }
             recordingStart = Date()
             peakAudioLevel = 0
             updateIcon(.recording)
