@@ -37,6 +37,9 @@ enum SettingsKey {
     static let soundsEnabled = "soundsEnabled"
     static let gradientEnabled = "gradientEnabled"
     static let alwaysVisiblePill = "alwaysVisiblePill"
+
+    // History
+    static let historyEnabled = "historyEnabled"
 }
 
 // MARK: - Reusable Components
@@ -118,6 +121,9 @@ struct SettingsView: View {
     @State private var gradientEnabled: Bool
     @State private var alwaysVisiblePill: Bool
 
+    // History
+    @State private var historyEnabled: Bool
+
     var onSave: (() -> Void)?
     var onCancel: (() -> Void)?
 
@@ -150,6 +156,7 @@ struct SettingsView: View {
         _soundsEnabled = State(initialValue: d.object(forKey: SettingsKey.soundsEnabled) as? Bool ?? true)
         _gradientEnabled = State(initialValue: d.object(forKey: SettingsKey.gradientEnabled) as? Bool ?? true)
         _alwaysVisiblePill = State(initialValue: d.object(forKey: SettingsKey.alwaysVisiblePill) as? Bool ?? true)
+        _historyEnabled = State(initialValue: d.object(forKey: SettingsKey.historyEnabled) as? Bool ?? true)
     }
 
     private var selectedTxProvider: TranscriptionProvider {
@@ -404,6 +411,19 @@ struct SettingsView: View {
                         Toggle("Gradient background", isOn: $gradientEnabled)
                         Toggle("Always-visible idle pill", isOn: $alwaysVisiblePill)
                     }
+
+                    // History
+                    Section {
+                        Toggle("Save transcription history", isOn: $historyEnabled)
+                    } header: {
+                        Text("History")
+                    } footer: {
+                        if !historyEnabled {
+                            Text("Transcriptions will not be saved to disk.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 .formStyle(.grouped)
                 .scrollContentBackground(.hidden)
@@ -458,6 +478,9 @@ struct SettingsView: View {
                     d.set(soundsEnabled, forKey: SettingsKey.soundsEnabled)
                     d.set(gradientEnabled, forKey: SettingsKey.gradientEnabled)
                     d.set(alwaysVisiblePill, forKey: SettingsKey.alwaysVisiblePill)
+
+                    // History
+                    d.set(historyEnabled, forKey: SettingsKey.historyEnabled)
 
                     onSave?()
                 }

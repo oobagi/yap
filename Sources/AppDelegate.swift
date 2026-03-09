@@ -23,7 +23,7 @@ enum AppState {
     case idle, recording, handsFreeRecording, handsFreePaused, processing
 }
 
-class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate, SettingsDelegate {
     private var statusItem: NSStatusItem!
     private var hotkeyManager: HotkeyManager!
     private var audioRecorder = AudioRecorder()
@@ -31,6 +31,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     private var pasteManager = PasteManager()
     private lazy var overlayPanel = OverlayPanel()
     private var settingsWindow: SettingsWindow?
+    private var historyWindow: HistoryWindow?
+    private var historyMenuItem: NSMenuItem!
     private var state: AppState = .idle
     private var recordingStart: Date?
     private var isEnabled = true
@@ -101,7 +103,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         enableMenuItem.target = self
         enableMenuItem.state = .on
         menu.addItem(enableMenuItem)
-        
+
+        historyMenuItem = NSMenuItem(title: "History", action: nil, keyEquivalent: "")
+        let historySubmenu = NSMenu()
+        historyMenuItem.submenu = historySubmenu
+        menu.addItem(historyMenuItem)
+
         let settingsItem = NSMenuItem(title: "Settings...", action: #selector(openSettings(_:)), keyEquivalent: ",")
         settingsItem.target = self
         menu.addItem(settingsItem)
@@ -112,9 +119,73 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
         quitItem.target = self
         menu.addItem(quitItem)
         
+        menu.delegate = self
         statusItem.menu = menu
     }
-    
+
+    private func rebuildHistoryMenu() {
+        guard let submenu = historyMenuItem.submenu else { return }
+        submenu.removeAllItems()
+
+        let entries = HistoryManager.shared.entries
+        if entries.isEmpty {
+            let empty = NSMenuItem(title: "No History", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            submenu.addItem(empty)
+        } else {
+            let shown = Array(entries.prefix(10))
+            for entry in shown {
+                let truncated: String
+                if entry.text.count <= 60 {
+                    truncated = entry.text
+                } else {
+                    truncated = String(entry.text.prefix(59)) + "\u{2026}"
+                }
+                let item = NSMenuItem(title: truncated, action: #selector(copyHistoryEntry(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = entry.text
+                submenu.addItem(item)
+            }
+
+            submenu.addItem(NSMenuItem.separator())
+
+            let showAll = NSMenuItem(title: "Show All...", action: #selector(openHistory(_:)), keyEquivalent: "")
+            showAll.target = self
+            submenu.addItem(showAll)
+        }
+
+        submenu.addItem(NSMenuItem.separator())
+
+        let clear = NSMenuItem(title: "Clear History", action: #selector(clearHistory(_:)), keyEquivalent: "")
+        clear.target = self
+        clear.isEnabled = !entries.isEmpty
+        submenu.addItem(clear)
+    }
+
+    @objc private func copyHistoryEntry(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+    }
+
+    @objc private func openHistory(_ sender: Any?) {
+        if historyWindow == nil {
+            historyWindow = HistoryWindow()
+        }
+        historyWindow?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func clearHistory(_ sender: Any?) {
+        HistoryManager.shared.clear()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        if menu === statusItem.menu {
+            rebuildHistoryMenu()
+        }
+    }
+
     private func updateIcon(_ state: AppState) {
         guard let button = statusItem.button else { return }
         switch state {
@@ -628,6 +699,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SettingsDelegate {
     }
 
     private func pasteText(_ text: String) {
+        let txProvider = audioTranscriber?.provider.rawValue ?? "apple"
+        let fmtProvider = textFormatter?.provider.rawValue
+        let fmtStyle = textFormatter != nil ? formattingStyle.rawValue : nil
+        HistoryManager.shared.append(text: text, txProvider: txProvider, fmtProvider: fmtProvider, fmtStyle: fmtStyle)
         pasteManager.paste(text)
         let nextStep: OnboardingStep?
         if overlayPanel.currentOnboardingStep == .tryIt {
