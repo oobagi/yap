@@ -99,18 +99,20 @@ class OverlayPanel: NSPanel {
 
     private func slideIn() {
         orderFront(nil)
+        let target = NSRect(x: frame.origin.x, y: onScreenY, width: frame.width, height: frame.height)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.5
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.16, 1, 0.3, 1)
-            animator().setFrameOrigin(NSPoint(x: frame.origin.x, y: onScreenY))
+            animator().setFrame(target, display: true)
         }
     }
 
     private func slideOut() {
+        let target = NSRect(x: frame.origin.x, y: offScreenY, width: frame.width, height: frame.height)
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.4
             ctx.timingFunction = CAMediaTimingFunction(controlPoints: 0.4, 0, 1, 1)
-            animator().setFrameOrigin(NSPoint(x: frame.origin.x, y: offScreenY))
+            animator().setFrame(target, display: true)
         }
     }
 
