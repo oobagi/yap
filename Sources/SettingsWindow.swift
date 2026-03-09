@@ -489,7 +489,7 @@ struct SettingsView: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .frame(width: 500, height: 760)
+        .frame(width: 500, height: 680)
     }
 }
 
@@ -500,7 +500,7 @@ class SettingsWindow: NSWindow {
 
     init() {
         super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 760),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 680),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false

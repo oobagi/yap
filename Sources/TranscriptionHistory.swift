@@ -18,11 +18,6 @@ final class HistoryManager {
         UserDefaults.standard.object(forKey: SettingsKey.historyEnabled) as? Bool ?? true
     }
 
-    private var maxEntries: Int {
-        let v = UserDefaults.standard.integer(forKey: SettingsKey.historyMaxEntries)
-        return v == 0 ? 20 : v
-    }
-
     private static var historyURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/yap/history.json")
@@ -41,7 +36,7 @@ final class HistoryManager {
             formattingStyle: fmtStyle
         )
         entries.insert(entry, at: 0)
-        if entries.count > maxEntries { entries = Array(entries.prefix(maxEntries)) }
+        if entries.count > 10 { entries = Array(entries.prefix(10)) }
         save()
     }
 
