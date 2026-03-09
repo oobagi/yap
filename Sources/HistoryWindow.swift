@@ -46,12 +46,6 @@ private struct HistoryRowView: View {
     let entry: HistoryEntry
     @State private var copied = false
 
-    private var truncatedText: String {
-        let t = entry.text
-        if t.count <= 80 { return t }
-        return String(t.prefix(79)) + "\u{2026}"
-    }
-
     private var relativeTime: String {
         let interval = Date().timeIntervalSince(entry.timestamp)
         switch interval {
@@ -82,9 +76,9 @@ private struct HistoryRowView: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(truncatedText)
+                Text(entry.text)
                     .font(.body)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 6) {
                     Text(relativeTime)
