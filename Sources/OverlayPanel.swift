@@ -38,7 +38,7 @@ class OverlayPanel: NSPanel {
     private var handsFreeTimer: Timer?
     private var handsFreeTimerStart: Date?
     private var handsFreeAccumulated: TimeInterval = 0
-    private let handsFreeTimerThreshold: TimeInterval = 60
+    private let handsFreeTimerThreshold: TimeInterval = 10
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -130,6 +130,7 @@ class OverlayPanel: NSPanel {
         } else {
             orderFront(nil)
         }
+        startHandsFreeTimer()
         withAnimation(.timingCurve(0.16, 1, 0.3, 1, duration: 0.5)) {
             overlayState.mode = .recording
         }
@@ -142,7 +143,6 @@ class OverlayPanel: NSPanel {
         overlayState.isPaused = false
         overlayState.isHandsFree = true
         updateButtonTargets()
-        startHandsFreeTimer()
     }
 
     func setHandsFreePaused(_ paused: Bool) {
@@ -466,6 +466,14 @@ struct OverlayView: View {
                             .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
                     }
 
+                if state.mode == .recording && state.handsFreeElapsed >= 10 {
+                    Text(formatHandsFreeElapsed(state.handsFreeElapsed))
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .foregroundColor(.white.opacity(0.5))
+                        .fixedSize()
+                        .transition(.opacity.combined(with: .offset(y: 12)))
+                }
+
                 ZStack {
                     if isActive {
                         pillContent
@@ -521,17 +529,10 @@ struct OverlayView: View {
                             .transition(.opacity.combined(with: .offset(y: 4)))
                     }
                 }
-                if state.isHandsFree && state.handsFreeElapsed >= 60 {
-                    Text(formatHandsFreeElapsed(state.handsFreeElapsed))
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5))
-                        .fixedSize()
-                        .transition(.opacity.combined(with: .offset(y: -4)))
-                }
                 } // end inner VStack
                 .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.onboardingStep)
                 .animation(.spring(response: 0.4, dampingFraction: 0.8), value: state.mode)
-                .animation(.easeOut(duration: 0.3), value: state.handsFreeElapsed >= 60)
+                .animation(.spring(response: 0.45, dampingFraction: 0.7), value: state.mode == .recording && state.handsFreeElapsed >= 10)
 
                 Spacer()
                     .frame(height: 415)
