@@ -109,24 +109,19 @@
   position: absolute;
   inset: 0;
   border-radius: var(--pill-radius);
-  background: var(--pill-bg);
-  backdrop-filter: blur(var(--pill-blur));
-  -webkit-backdrop-filter: blur(var(--pill-blur));
+  background: rgba(15, 15, 25, 0.88);
   border: 1px solid var(--pill-border);
-  box-shadow: var(--pill-shadow-recording);
   transition:
     background 350ms var(--transition-spring),
-    border-color 350ms var(--transition-spring),
-    box-shadow 350ms var(--transition-spring);
+    border-color 350ms var(--transition-spring);
 }
 
 /* ── Pill State Variants ────────────────────────────────────────────── */
 
 .pill.idle .pill-glass {
-  background: var(--pill-bg-idle);
+  background: rgba(15, 15, 25, 0.65);
   border-color: var(--pill-border-idle);
   border-width: 1.5px;
-  box-shadow: var(--pill-shadow-idle);
 }
 
 .pill.expanded {
@@ -254,12 +249,9 @@
 /* ── Onboarding Card ────────────────────────────────────────────────── */
 
 .onboarding-card {
-  background: var(--card-bg);
-  backdrop-filter: blur(var(--card-blur));
-  -webkit-backdrop-filter: blur(var(--card-blur));
+  background: rgba(15, 15, 25, 0.88);
   border: 1px solid var(--card-border);
   border-radius: var(--card-radius);
-  box-shadow: var(--card-shadow);
   padding: 10px 16px;
   font-size: 15px;
   font-weight: 500;
