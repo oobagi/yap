@@ -59,26 +59,32 @@
   });
 </script>
 
-<div
-  class="lava-lamp"
-  class:active={visible}
-  style="background: {blobStyles.join(', ')};"
-></div>
+<div class="lava-lamp-outer" class:active={visible}>
+  <div
+    class="lava-lamp-inner"
+    style="background: {blobStyles.join(', ')};"
+  ></div>
+</div>
 
 <style>
-  .lava-lamp {
+  .lava-lamp-outer {
     position: absolute;
-    inset: 0;
+    inset: -40px;
     pointer-events: none;
-    filter: blur(40px);
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(30px);
     transition: opacity 600ms cubic-bezier(0.16, 1, 0.3, 1),
                 transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
   }
 
-  .lava-lamp.active {
+  .lava-lamp-outer.active {
     opacity: 1;
     transform: translateY(0);
+  }
+
+  .lava-lamp-inner {
+    width: 100%;
+    height: 100%;
+    filter: blur(40px);
   }
 </style>
