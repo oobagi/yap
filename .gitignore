@@ -39,3 +39,9 @@ ehthumbs.db
 Desktop.ini
 *.tmp
 *.bak
+
+# Tauri
+tauri-app/node_modules/
+tauri-app/.svelte-kit/
+tauri-app/src-tauri/target/
+tauri-app/package-lock.json
