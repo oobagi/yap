@@ -74,10 +74,9 @@
     }
   });
 
-  // Show gradient when pill is expanded (recording/processing) or hovering,
-  // or always in idle if alwaysVisible (subtle ambient glow)
+  // Gradient only shows during recording/processing (not idle)
   let showGradient = $derived(
-    overlayData.gradientEnabled && (isExpanded || hovering || overlayData.alwaysVisible)
+    overlayData.gradientEnabled && isExpanded
   );
 
   // Audio bounce — pill scales with audio level during recording

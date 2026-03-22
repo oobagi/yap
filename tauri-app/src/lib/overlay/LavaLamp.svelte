@@ -61,10 +61,8 @@
 
 <div
   class="lava-lamp"
-  style="
-    opacity: {visible ? intensityOpacity : 0};
-    background: {blobStyles.join(', ')};
-  "
+  class:active={visible}
+  style="background: {blobStyles.join(', ')};"
 ></div>
 
 <style>
@@ -73,6 +71,14 @@
     inset: 0;
     pointer-events: none;
     filter: blur(40px);
-    transition: opacity 500ms ease-out;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 600ms cubic-bezier(0.16, 1, 0.3, 1),
+                transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .lava-lamp.active {
+    opacity: 1;
+    transform: translateY(0);
   }
 </style>
