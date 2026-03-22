@@ -48,15 +48,14 @@
 .overlay-container {
   position: fixed;
   bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 1400px;
-  height: 700px;
+  left: 0;
+  width: 400px;
+  height: 200px;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: flex-end;
-  padding-bottom: 40px;
+  padding-bottom: 30px;
   pointer-events: none;
   font-family: var(--font-family);
   -webkit-font-smoothing: antialiased;

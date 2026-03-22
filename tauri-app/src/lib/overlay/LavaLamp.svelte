@@ -12,41 +12,42 @@
   let startTime: number = 0;
 
   // Blob definitions — colors, sizes, and Lissajous parameters
+  // Blob sizes/amplitudes scaled for 400x200 window (vs original 1400x700)
   const blobs = [
     {
       color: [147, 51, 234],  // purple
-      width: 300,
-      height: 140,
+      width: 120,
+      height: 80,
       xFreq: 0.7, yFreq: 0.5,
-      xAmp: 120, yAmp: 35,
+      xAmp: 60, yAmp: 25,
       xPhase: 0, yPhase: 0,
       brightnessScale: 1.0,
     },
     {
       color: [59, 130, 246],  // blue
-      width: 360,
-      height: 160,
+      width: 140,
+      height: 90,
       xFreq: 0.6, yFreq: 0.45,
-      xAmp: 140, yAmp: 40,
+      xAmp: 70, yAmp: 30,
       xPhase: 1.5, yPhase: 1.0,
       brightnessScale: 0.9,
       xUseSin: true,
     },
     {
       color: [34, 211, 238],  // cyan
-      width: 280,
-      height: 120,
+      width: 110,
+      height: 70,
       xFreq: 0.8, yFreq: 0.6,
-      xAmp: 100, yAmp: 30,
+      xAmp: 50, yAmp: 20,
       xPhase: 3.0, yPhase: 2.0,
       brightnessScale: 0.85,
     },
     {
       color: [99, 102, 241],  // indigo
-      width: 320,
-      height: 130,
+      width: 130,
+      height: 75,
       xFreq: 0.55, yFreq: 0.7,
-      xAmp: 130, yAmp: 35,
+      xAmp: 65, yAmp: 25,
       xPhase: 4.5, yPhase: 3.5,
       brightnessScale: 0.9,
       xUseSin: true,
@@ -60,16 +61,6 @@
     const cy = h / 2;
 
     ctx.clearRect(0, 0, w, h);
-
-    // Clip to pill shape so gradient doesn't bleed outside on transparent windows
-    ctx.save();
-    const dpr = window.devicePixelRatio || 1;
-    const pillW = w / dpr;
-    const pillH = h / dpr;
-    const radius = pillH / 2; // pill shape = half-height radius
-    ctx.beginPath();
-    ctx.roundRect(0, 0, pillW, pillH, radius);
-    ctx.clip();
 
     const speed = 0.4 + energy * 0.6;
     const brightness = 0.25 + energy * 0.25;
@@ -106,7 +97,6 @@
       ctx.fill();
       ctx.restore();
     }
-    ctx.restore(); // restore the pill clip
   }
 
   function loop(timestamp: number) {
@@ -174,7 +164,6 @@
     inset: 0;
     pointer-events: none;
     overflow: hidden;
-    border-radius: inherit; /* inherit pill's border-radius to clip */
   }
 
   .lava-lamp-wrapper canvas {
