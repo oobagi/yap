@@ -3,7 +3,6 @@
   "productName": "Yap",
   "version": "1.0.0",
   "identifier": "com.yap.app",
-  "macOSPrivateApi": true,
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -11,6 +10,7 @@
     "frontendDist": "../build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "overlay",
