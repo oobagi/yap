@@ -113,6 +113,8 @@ namespace Yap.Audio
             Logger.Log("AudioRecorder: resumed");
         }
 
+        private int _diagCount;
+
         private void OnDataAvailable(object? sender, WaveInEventArgs e)
         {
             // Write audio data to file (unless paused)
@@ -123,6 +125,19 @@ namespace Yap.Audio
 
             // Always compute levels (even when paused, for visual feedback)
             if (e.BytesRecorded == 0) return;
+
+            // Diagnostic: log first few buffers to see raw sample values
+            _diagCount++;
+            if (_diagCount <= 3)
+            {
+                short maxSample = 0;
+                for (int j = 0; j < Math.Min(e.BytesRecorded / 2, 100); j++)
+                {
+                    short s = BitConverter.ToInt16(e.Buffer, j * 2);
+                    if (Math.Abs(s) > Math.Abs(maxSample)) maxSample = s;
+                }
+                Logger.Log($"AudioRecorder DIAG: buffer #{_diagCount}, bytes={e.BytesRecorded}, maxSample(first100)={maxSample}, device={_waveIn?.DeviceNumber}");
+            }
 
             // Convert 16-bit PCM bytes to float samples
             int sampleCount = e.BytesRecorded / 2; // 16-bit = 2 bytes per sample
