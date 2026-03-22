@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using Yap.Core;
 using Application = System.Windows.Application;
+using Clipboard = System.Windows.Clipboard;
 
 namespace Yap.Input
 {
