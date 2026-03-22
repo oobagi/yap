@@ -1,0 +1,331 @@
+<Window x:Class="Yap.UI.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:Yap.UI"
+        Title="Yap Settings"
+        Width="500" Height="680"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True"
+        Background="#1E1E1E"
+        KeyDown="Window_KeyDown">
+
+    <Window.Resources>
+        <local:WatermarkVisibilityConverter x:Key="WatermarkVisibilityConverter"/>
+        <Style TargetType="Label">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <!-- Base TextBox style with watermark support -->
+        <Style TargetType="TextBox">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3F3F3F"/>
+            <Setter Property="Padding" Value="4,3"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3F3F3F"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="CheckBox">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+        <Style TargetType="GroupBox">
+            <Setter Property="Foreground" Value="#CCCCCC"/>
+            <Setter Property="BorderBrush" Value="#3F3F3F"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Background" Value="#2D2D2D"/>
+            <Setter Property="Foreground" Value="#FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#3F3F3F"/>
+            <Setter Property="Padding" Value="12,4"/>
+            <Setter Property="FontSize" Value="12"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="16">
+            <StackPanel Margin="8">
+                <!-- General -->
+                <GroupBox Header="General">
+                    <StackPanel Margin="8">
+                        <Label Content="Hotkey"/>
+                        <StackPanel Orientation="Horizontal" Margin="0,2,0,2">
+                            <Button x:Name="HotkeyButton" Content="Caps Lock"
+                                    HorizontalAlignment="Left" MinWidth="180"
+                                    Click="HotkeyButton_Click"
+                                    FontSize="12" Padding="12,6"/>
+                            <TextBlock x:Name="HotkeyHint"
+                                       Foreground="#666666" FontSize="11"
+                                       VerticalAlignment="Center"
+                                       Margin="10,0,0,0"
+                                       Text="Click to change"/>
+                        </StackPanel>
+                        <TextBlock x:Name="HotkeyCurrentLabel"
+                                   Foreground="#888888" FontSize="10"
+                                   Margin="0,2,0,8"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Microphone -->
+                <GroupBox Header="Microphone">
+                    <StackPanel Margin="8">
+                        <Label Content="Input Device"/>
+                        <ComboBox x:Name="MicDeviceCombo" Margin="0,2,0,4"/>
+                        <TextBlock Foreground="#666666" FontSize="10" Text="Select the microphone to use for recording"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Transcription -->
+                <GroupBox Header="Transcription">
+                    <StackPanel Margin="8">
+                        <Label Content="Provider"/>
+                        <ComboBox x:Name="TxProviderCombo" Margin="0,2,0,8"
+                                  SelectionChanged="TxProviderCombo_SelectionChanged">
+                            <ComboBoxItem Content="None (Windows Speech)" Tag="none"/>
+                            <ComboBoxItem Content="Google Gemini" Tag="gemini"/>
+                            <ComboBoxItem Content="OpenAI" Tag="openai"/>
+                            <ComboBoxItem Content="Deepgram" Tag="deepgram"/>
+                            <ComboBoxItem Content="ElevenLabs" Tag="elevenlabs"/>
+                        </ComboBox>
+
+                        <StackPanel x:Name="TxOptionsPanel" Visibility="Collapsed">
+                            <Label Content="API Key"/>
+                            <Grid Margin="0,2,0,2">
+                                <TextBox x:Name="TxApiKeyBox" TextChanged="TxApiKeyBox_TextChanged"/>
+                                <TextBlock Text="Required" Foreground="#666666" FontSize="12"
+                                           Margin="6,4,0,0" IsHitTestVisible="False"
+                                           Visibility="{Binding Text.Length, ElementName=TxApiKeyBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                            </Grid>
+                            <TextBlock x:Name="TxApiKeyWarning"
+                                       Text="&#x26A0; API key is required for this provider"
+                                       Foreground="#DDAA33" FontSize="10"
+                                       Margin="0,0,0,6" Visibility="Collapsed"/>
+
+                            <Label Content="Model"/>
+                            <Grid Margin="0,2,0,4">
+                                <TextBox x:Name="TxModelBox"/>
+                                <TextBlock x:Name="TxModelPlaceholder" Foreground="#666666" FontSize="12"
+                                           Margin="6,4,0,0" IsHitTestVisible="False"
+                                           Visibility="{Binding Text.Length, ElementName=TxModelBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                            </Grid>
+                            <TextBlock x:Name="TxModelHint" Foreground="#666666" FontSize="10"
+                                       Margin="0,0,0,8"/>
+
+                            <!-- Deepgram options -->
+                            <StackPanel x:Name="DgOptionsPanel" Visibility="Collapsed">
+                                <CheckBox x:Name="DgSmartFormatCheck" Content="Smart Format"
+                                          Margin="0,0,0,2"/>
+                                <TextBlock Foreground="#666666" FontSize="10"
+                                           Margin="18,0,0,8"
+                                           Text="Automatically formats numbers, dates, and punctuation"/>
+                                <Label Content="Language (ISO 639-1)"/>
+                                <Grid Margin="0,2,0,8">
+                                    <TextBox x:Name="DgLanguageBox"/>
+                                    <TextBlock Text="Auto-detect" Foreground="#666666" FontSize="12"
+                                               Margin="6,4,0,0" IsHitTestVisible="False"
+                                               Visibility="{Binding Text.Length, ElementName=DgLanguageBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                                </Grid>
+                                <Label Content="Keywords (comma-separated)"/>
+                                <Grid Margin="0,2,0,8">
+                                    <TextBox x:Name="DgKeywordsBox"/>
+                                    <TextBlock Text="e.g. Kubernetes, Jira, OAuth" Foreground="#666666" FontSize="12"
+                                               Margin="6,4,0,0" IsHitTestVisible="False"
+                                               Visibility="{Binding Text.Length, ElementName=DgKeywordsBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                                </Grid>
+                            </StackPanel>
+
+                            <!-- OpenAI options -->
+                            <StackPanel x:Name="OaiOptionsPanel" Visibility="Collapsed">
+                                <Label Content="Language (ISO 639-1)"/>
+                                <Grid Margin="0,2,0,2">
+                                    <TextBox x:Name="OaiLanguageBox"/>
+                                    <TextBlock Text="Auto-detect" Foreground="#666666" FontSize="12"
+                                               Margin="6,4,0,0" IsHitTestVisible="False"
+                                               Visibility="{Binding Text.Length, ElementName=OaiLanguageBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                                </Grid>
+                                <TextBlock Foreground="#666666" FontSize="10"
+                                           Margin="0,0,0,8"
+                                           Text="ISO-639-1 code (e.g., en, es, fr)"/>
+                                <Label Content="Prompt"/>
+                                <Grid Margin="0,2,0,8">
+                                    <TextBox x:Name="OaiPromptBox"/>
+                                    <TextBlock Text="Optional context" Foreground="#666666" FontSize="12"
+                                               Margin="6,4,0,0" IsHitTestVisible="False"
+                                               Visibility="{Binding Text.Length, ElementName=OaiPromptBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                                </Grid>
+                            </StackPanel>
+
+                            <!-- Gemini options -->
+                            <StackPanel x:Name="GeminiOptionsPanel" Visibility="Collapsed">
+                                <Label Content="Temperature"/>
+                                <StackPanel Orientation="Horizontal">
+                                    <Slider x:Name="GeminiTempSlider" Width="300"
+                                            Minimum="0" Maximum="2" TickFrequency="0.1"
+                                            IsSnapToTickEnabled="True"
+                                            ValueChanged="GeminiTempSlider_ValueChanged"/>
+                                    <TextBlock x:Name="GeminiTempLabel" Foreground="#999999"
+                                               FontSize="12" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+                                <TextBlock Foreground="#666666" FontSize="10"
+                                           Margin="0,2,0,8"
+                                           Text="Lower = more consistent, Higher = more creative"/>
+                            </StackPanel>
+
+                            <!-- ElevenLabs options -->
+                            <StackPanel x:Name="ElOptionsPanel" Visibility="Collapsed">
+                                <Label Content="Language Code"/>
+                                <Grid Margin="0,2,0,8">
+                                    <TextBox x:Name="ElLanguageBox"/>
+                                    <TextBlock Text="Auto-detect" Foreground="#666666" FontSize="12"
+                                               Margin="6,4,0,0" IsHitTestVisible="False"
+                                               Visibility="{Binding Text.Length, ElementName=ElLanguageBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                                </Grid>
+                            </StackPanel>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Formatting -->
+                <GroupBox Header="Formatting">
+                    <StackPanel Margin="8">
+                        <Label Content="Provider"/>
+                        <ComboBox x:Name="FmtProviderCombo" Margin="0,2,0,8"
+                                  SelectionChanged="FmtProviderCombo_SelectionChanged">
+                            <ComboBoxItem Content="None" Tag="none"/>
+                            <ComboBoxItem Content="Google Gemini" Tag="gemini"/>
+                            <ComboBoxItem Content="OpenAI" Tag="openai"/>
+                            <ComboBoxItem Content="Anthropic" Tag="anthropic"/>
+                            <ComboBoxItem Content="Groq" Tag="groq"/>
+                        </ComboBox>
+
+                        <StackPanel x:Name="FmtOptionsPanel" Visibility="Collapsed">
+                            <Label Content="API Key"/>
+                            <Grid Margin="0,2,0,2">
+                                <TextBox x:Name="FmtApiKeyBox" TextChanged="FmtApiKeyBox_TextChanged"/>
+                                <TextBlock Text="Required" Foreground="#666666" FontSize="12"
+                                           Margin="6,4,0,0" IsHitTestVisible="False"
+                                           Visibility="{Binding Text.Length, ElementName=FmtApiKeyBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                            </Grid>
+                            <TextBlock x:Name="FmtApiKeyWarning"
+                                       Text="&#x26A0; API key is required for this provider"
+                                       Foreground="#DDAA33" FontSize="10"
+                                       Margin="0,0,0,4" Visibility="Collapsed"/>
+                            <CheckBox x:Name="FmtUseSameKeyCheck"
+                                      Content="Use same API key as transcription"
+                                      Margin="0,0,0,8"
+                                      Checked="FmtUseSameKeyCheck_Changed"
+                                      Unchecked="FmtUseSameKeyCheck_Changed"/>
+
+                            <Label Content="Model"/>
+                            <Grid Margin="0,2,0,4">
+                                <TextBox x:Name="FmtModelBox"/>
+                                <TextBlock x:Name="FmtModelPlaceholder" Foreground="#666666" FontSize="12"
+                                           Margin="6,4,0,0" IsHitTestVisible="False"
+                                           Visibility="{Binding Text.Length, ElementName=FmtModelBox, Converter={StaticResource WatermarkVisibilityConverter}}"/>
+                            </Grid>
+                            <TextBlock x:Name="FmtModelHint" Foreground="#666666" FontSize="10"
+                                       Margin="0,0,0,8"/>
+
+                            <Label Content="Style"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,2,0,8">
+                                <RadioButton x:Name="StyleCasual" Content="Casual" Foreground="#CCCCCC"
+                                             GroupName="Style" Margin="0,0,12,0"
+                                             Checked="StyleRadio_Changed"/>
+                                <RadioButton x:Name="StyleFormatted" Content="Formatted" Foreground="#CCCCCC"
+                                             GroupName="Style" Margin="0,0,12,0"
+                                             Checked="StyleRadio_Changed"/>
+                                <RadioButton x:Name="StyleProfessional" Content="Professional" Foreground="#CCCCCC"
+                                             GroupName="Style"
+                                             Checked="StyleRadio_Changed"/>
+                            </StackPanel>
+
+                            <!-- Style preview -->
+                            <Border Background="#1A1A1A" CornerRadius="4" BorderBrush="#3F3F3F"
+                                    BorderThickness="1" Margin="0,0,0,8">
+                                <StackPanel>
+                                    <TextBlock x:Name="StyleLabel" Foreground="#CCCCCC" FontWeight="SemiBold"
+                                               FontSize="11" Margin="8,6,8,2"/>
+                                    <TextBlock x:Name="StyleDescription" Foreground="#888888"
+                                               FontSize="10" Margin="8,0,8,6"/>
+                                    <Grid Margin="8,0,8,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Before" Foreground="#CC5555"
+                                                       FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                            <TextBlock x:Name="StyleBefore" Foreground="#888888"
+                                                       FontSize="10" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                        <Rectangle Grid.Column="1" Width="1" Fill="#3F3F3F" Margin="8,0"/>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="After" Foreground="#55CC55"
+                                                       FontSize="10" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                            <TextBlock x:Name="StyleAfter" Foreground="#CCCCCC"
+                                                       FontSize="10" TextWrapping="Wrap"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Appearance -->
+                <GroupBox Header="Appearance">
+                    <StackPanel Margin="8">
+                        <CheckBox x:Name="SoundsEnabledCheck" Content="Sound effects" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="GradientEnabledCheck" Content="Gradient background" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="AlwaysVisibleCheck" Content="Always-visible idle pill" Margin="0,0,0,4"/>
+                        <CheckBox x:Name="StartWithWindowsCheck" Content="Start with Windows" Margin="0,0,0,4"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- History -->
+                <GroupBox Header="History">
+                    <StackPanel Margin="8">
+                        <CheckBox x:Name="HistoryEnabledCheck" Content="Save transcription history"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <!-- Advanced -->
+                <GroupBox Header="Advanced">
+                    <StackPanel Margin="8">
+                        <Label Content="Speech Recognition Locale"/>
+                        <TextBox x:Name="SpeechLocaleBox" Margin="0,2,0,4"/>
+                        <TextBlock Foreground="#666666" FontSize="10"
+                                   Margin="0,0,0,8"
+                                   Text="BCP 47 code (e.g. en-US, de-DE). Leave empty for system default."/>
+                        <Button x:Name="ResetOnboardingButton" Content="Reset Onboarding"
+                                HorizontalAlignment="Left" Click="ResetOnboarding_Click"/>
+                    </StackPanel>
+                </GroupBox>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Bottom button bar -->
+        <Border Grid.Row="1" BorderBrush="#3F3F3F" BorderThickness="0,1,0,0"
+                Background="#1E1E1E" Padding="16,10">
+            <Grid>
+                <Button Content="Cancel" HorizontalAlignment="Right" Margin="0,0,80,0"
+                        Click="Cancel_Click"/>
+                <Button Content="Save" HorizontalAlignment="Right"
+                        Click="Save_Click" FontWeight="SemiBold"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

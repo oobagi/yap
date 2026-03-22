@@ -1,0 +1,465 @@
+/* ── Overlay CSS ─────────────────────────────────────────────────────── */
+/* All styling for the floating pill overlay window.                     */
+/* The window itself is fully transparent — visual surface comes from    */
+/* the pill element and its glass-chip background.                      */
+
+/* ── CSS Custom Properties ──────────────────────────────────────────── */
+
+:root {
+  --pill-bg: rgba(0, 0, 0, 0.75);
+  --pill-bg-idle: rgba(0, 0, 0, 0.4);
+  --pill-border: rgba(255, 255, 255, 0.3);
+  --pill-border-idle: rgba(255, 255, 255, 0.35);
+  --pill-shadow-recording: 0 4px 16px rgba(0, 0, 0, 0.35);
+  --pill-shadow-idle: 0 2px 6px rgba(0, 0, 0, 0.1);
+  --pill-radius: 50vh;
+  --pill-blur: 20px;
+
+  --bar-width: 3px;
+  --bar-gap: 2px;
+  --bar-radius: 1.5px;
+  --bar-color: white;
+  --bar-opacity: 0.9;
+  --bar-min-height: 5px;
+  --bar-max-height: 28px;
+
+  --card-bg: rgba(0, 0, 0, 0.75);
+  --card-border: rgba(255, 255, 255, 0.3);
+  --card-radius: 25px;
+  --card-blur: 20px;
+  --card-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+
+  --transition-spring: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-ease-out: cubic-bezier(0.4, 0, 1, 1);
+
+  --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+}
+
+/* ── Base Reset ─────────────────────────────────────────────────────── */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* ── Overlay Container ──────────────────────────────────────────────── */
+
+.overlay-container {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 1200px;
+  height: 350px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 20px;
+  pointer-events: none;
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ── Lava Lamp Canvas ───────────────────────────────────────────────── */
+
+.lava-lamp-wrapper {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.lava-lamp-wrapper canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Pill ────────────────────────────────────────────────────────────── */
+
+.pill-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.pill {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  border-radius: var(--pill-radius);
+  pointer-events: auto;
+  cursor: default;
+  will-change: transform, opacity;
+  transition:
+    transform 350ms var(--transition-spring),
+    opacity 200ms ease,
+    box-shadow 350ms var(--transition-spring),
+    min-height 350ms var(--transition-spring),
+    padding 350ms var(--transition-spring),
+    background-color 350ms var(--transition-spring);
+}
+
+.pill-glass {
+  position: absolute;
+  inset: 0;
+  border-radius: var(--pill-radius);
+  background: rgba(15, 15, 25, 0.88);
+  border: 1px solid var(--pill-border);
+  transition:
+    background 350ms var(--transition-spring),
+    border-color 350ms var(--transition-spring);
+}
+
+/* ── Pill State Variants ────────────────────────────────────────────── */
+
+.pill.idle .pill-glass {
+  background: rgba(15, 15, 25, 0.65);
+  border-color: var(--pill-border-idle);
+  border-width: 1.5px;
+}
+
+.pill.expanded {
+  min-height: 28px;
+  padding: 6px 12px;
+}
+
+.pill.expanded.hands-free {
+  padding: 6px 7px;
+}
+
+.pill.minimized {
+  min-height: 8px;
+  padding: 6px 12px;
+}
+
+/* ── Bars Container ─────────────────────────────────────────────────── */
+
+.bars-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--bar-gap);
+  width: 52px;
+  height: 28px;
+  position: relative;
+  z-index: 1;
+}
+
+.bar {
+  width: var(--bar-width);
+  min-height: var(--bar-min-height);
+  border-radius: var(--bar-radius);
+  background: var(--bar-color);
+  opacity: var(--bar-opacity);
+  transition: height 60ms var(--transition-spring);
+  will-change: height, opacity;
+}
+
+.bar.paused {
+  opacity: 0.25;
+  height: var(--bar-min-height) !important;
+}
+
+/* ── Hands-Free Buttons ─────────────────────────────────────────────── */
+
+.hands-free-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 124px;
+  height: 28px;
+  position: relative;
+  z-index: 1;
+}
+
+.hands-free-controls .bars-container {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.btn-action {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    transform 350ms var(--transition-spring),
+    opacity 200ms ease;
+  z-index: 2;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.btn-pause {
+  background: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.9);
+  left: calc(50% - 49px - 13px);
+}
+
+.btn-stop {
+  background: rgba(255, 0, 0, 0.85);
+  color: white;
+  left: calc(50% + 49px - 13px);
+  font-size: 11px;
+}
+
+.btn-action:hover {
+  transform: scale(1.1);
+}
+
+.btn-action:active {
+  transform: scale(0.95);
+}
+
+/* ── Error Content ──────────────────────────────────────────────────── */
+
+.error-content {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  z-index: 1;
+  white-space: nowrap;
+}
+
+.error-icon {
+  color: #ff4444;
+  font-size: 12px;
+}
+
+.error-message {
+  font-size: 11px;
+  font-weight: 500;
+  color: white;
+  line-height: 1;
+}
+
+/* ── Onboarding Card ────────────────────────────────────────────────── */
+
+.onboarding-card {
+  background: rgba(15, 15, 25, 0.88);
+  border: 1px solid var(--card-border);
+  border-radius: var(--card-radius);
+  padding: 10px 16px;
+  font-size: 15px;
+  font-weight: 500;
+  color: white;
+  text-align: center;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.onboarding-card .keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  background: rgb(64, 64, 64);
+  border: 1px solid rgb(115, 115, 115);
+  border-radius: 5px;
+  padding: 3px 8px;
+  margin: 0 2px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  vertical-align: middle;
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Rounded', 'Helvetica Neue', sans-serif;
+}
+
+/* ── Elapsed Timer ──────────────────────────────────────────────────── */
+
+.elapsed-timer {
+  font-size: 11px;
+  font-weight: 500;
+  font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+  color: rgba(255, 255, 255, 0.5);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Hover Tooltip ──────────────────────────────────────────────────── */
+
+.tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  font-size: 13px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.6);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* ── Hover Mic Icon ─────────────────────────────────────────────────── */
+
+.hover-mic {
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+}
+
+.hover-mic svg {
+  width: 16px;
+  height: 16px;
+  fill: rgba(255, 255, 255, 0.9);
+}
+
+/* ── Hold Prompt ────────────────────────────────────────────────────── */
+
+.hold-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.8);
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.hold-prompt .keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  background: rgb(64, 64, 64);
+  border: 1px solid rgb(115, 115, 115);
+  border-radius: 5px;
+  padding: 3px 8px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Rounded', 'Helvetica Neue', sans-serif;
+}
+
+/* ── Animations ─────────────────────────────────────────────────────── */
+
+/* Slide in from bottom */
+@keyframes slideIn {
+  from {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* Slide out to bottom */
+@keyframes slideOut {
+  from {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  to {
+    transform: translateY(30px);
+    opacity: 0;
+  }
+}
+
+/* Onboarding card entrance */
+@keyframes cardEnter {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* Shimmer sweep for processing bars */
+@keyframes shimmer {
+  0% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.95;
+  }
+  100% {
+    opacity: 0.35;
+  }
+}
+
+/* Shake for noSpeech */
+@keyframes shake {
+  0% { transform: translateX(0); }
+  10% { transform: translateX(8px); }
+  20% { transform: translateX(-7px); }
+  30% { transform: translateX(5px); }
+  40% { transform: translateX(-4px); }
+  50% { transform: translateX(3px); }
+  60% { transform: translateX(-2px); }
+  70% { transform: translateX(1px); }
+  80% { transform: translateX(-0.5px); }
+  90% { transform: translateX(0.25px); }
+  100% { transform: translateX(0); }
+}
+
+/* Bar scale-in entrance */
+@keyframes barsScaleIn {
+  from {
+    transform: scaleX(0.001);
+    opacity: 0;
+  }
+  to {
+    transform: scaleX(1);
+    opacity: 1;
+  }
+}
+
+/* Elapsed timer fade-in */
+@keyframes fadeSlideIn {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* ── Animation Classes ──────────────────────────────────────────────── */
+
+.animate-slide-in {
+  animation: slideIn 500ms var(--transition-spring) forwards;
+}
+
+.animate-slide-out {
+  animation: slideOut 400ms var(--transition-ease-out) forwards;
+}
+
+.animate-card-enter {
+  animation: cardEnter 500ms var(--transition-spring) forwards;
+}
+
+.animate-shake {
+  animation: shake 500ms ease-out;
+}
+
+.animate-bars-enter {
+  animation: barsScaleIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-fade-slide-in {
+  animation: fadeSlideIn 450ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}

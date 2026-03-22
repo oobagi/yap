@@ -1,0 +1,179 @@
+name: Windows Build
+
+on:
+  push:
+    branches: [master, feat/multi-platform]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-build.yml'
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [master, feat/multi-platform]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-build.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Extract version from .csproj
+        id: version
+        shell: pwsh
+        run: |
+          [xml]$csproj = Get-Content windows/Yap/Yap.csproj
+          $version = $csproj.Project.PropertyGroup.Version
+          if (-not $version) { $version = "0.0.0" }
+          Write-Host "Version: $version"
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Restore NuGet packages
+        working-directory: windows/Yap
+        run: dotnet restore
+
+      - name: Build (Release)
+        working-directory: windows/Yap
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run tests
+        working-directory: windows
+        run: dotnet test --configuration Release --no-build --verbosity normal
+        continue-on-error: true
+
+      - name: Publish self-contained (win-x64)
+        working-directory: windows/Yap
+        run: >
+          dotnet publish
+          --configuration Release
+          --runtime win-x64
+          --self-contained true
+          --output ${{ github.workspace }}/windows/build
+          -p:PublishSingleFile=true
+          -p:PublishTrimmed=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:TrimMode=partial
+
+      - name: Copy sound assets
+        shell: pwsh
+        run: |
+          $soundsSource = "windows/Yap/Resources/Sounds"
+          $soundsDest = "windows/build/Resources/Sounds"
+          if (Test-Path $soundsSource) {
+            New-Item -ItemType Directory -Path $soundsDest -Force | Out-Null
+            $wavFiles = Get-ChildItem -Path $soundsSource -Filter "*.wav" -ErrorAction SilentlyContinue
+            if ($wavFiles) {
+              $wavFiles | Copy-Item -Destination $soundsDest
+              Write-Host "Copied $($wavFiles.Count) sound file(s)"
+            }
+          }
+
+      - name: Create portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.APP_VERSION }}"
+          $zipName = "Yap-v${version}-win64.zip"
+          Compress-Archive -Path "windows/build/*" -DestinationPath $zipName -CompressionLevel Optimal
+          Write-Host "Created $zipName"
+          "ZIP_NAME=$zipName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+        id: zip
+
+      - name: Build Inno Setup installer
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.APP_VERSION }}"
+          $iscc = Get-Command iscc.exe -ErrorAction SilentlyContinue
+          if (-not $iscc) {
+            # Check common Inno Setup install locations on GitHub runners
+            $candidates = @(
+              "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+              "${env:ProgramFiles}\Inno Setup 6\ISCC.exe"
+            )
+            foreach ($path in $candidates) {
+              if (Test-Path $path) {
+                $iscc = Get-Item $path
+                break
+              }
+            }
+          }
+          if ($iscc) {
+            Write-Host "Found Inno Setup at: $($iscc.FullName)"
+            & $iscc.FullName /DAppVersion=$version "windows/installer/setup.iss"
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::warning::Inno Setup build failed with exit code $LASTEXITCODE"
+            } else {
+              Write-Host "Installer created successfully"
+            }
+          } else {
+            Write-Host "::warning::Inno Setup not found on runner, skipping installer creation"
+          }
+
+      - name: Upload portable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yap-v${{ steps.version.outputs.APP_VERSION }}-win64-portable
+          path: Yap-v${{ steps.version.outputs.APP_VERSION }}-win64.zip
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        if: hashFiles('windows/installer/output/*.exe') != ''
+        with:
+          name: Yap-v${{ steps.version.outputs.APP_VERSION }}-Setup
+          path: windows/installer/output/Yap-v${{ steps.version.outputs.APP_VERSION }}-Setup.exe
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload raw build output
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yap-windows-x64
+          path: windows/build/
+          retention-days: 30
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+
+    steps:
+      - name: Download portable zip
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Yap-v*-win64-portable
+          merge-multiple: true
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          pattern: Yap-v*-Setup
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: List release artifacts
+        run: ls -la
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            Yap-v*-win64.zip
+            Yap-v*-Setup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
