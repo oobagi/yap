@@ -7,7 +7,7 @@
   let { energy = 0.5, visible = true }: { energy?: number; visible?: boolean } = $props();
 
   let t = $state(0);
-  let slideOffset = $state(60); // starts 60% below — off screen
+  let slideOffset = $state(40); // starts 60% below — off screen
   let fadeOpacity = $state(0);
   let animId = 0;
   let startTime = 0;
@@ -15,7 +15,7 @@
   let slideStart = 0;
   let slideFrom = 60;
   let slideTo = 0;
-  const SLIDE_DURATION = 450; // ms
+  const SLIDE_DURATION = 350; // ms
 
   const blobs = [
     { color: '147, 51, 234',  offsetX: -8,  offsetY: -3,  size: 220, scale: 1.0  },
@@ -84,7 +84,7 @@
     } else if (!visible && prevVisible) {
       // Slide OUT: from current to 60% below
       slideFrom = slideOffset;
-      slideTo = 60;
+      slideTo = 40;
       slideStart = performance.now();
     }
     prevVisible = visible;
