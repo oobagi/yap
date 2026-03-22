@@ -61,6 +61,16 @@
 
     ctx.clearRect(0, 0, w, h);
 
+    // Clip to pill shape so gradient doesn't bleed outside on transparent windows
+    ctx.save();
+    const dpr = window.devicePixelRatio || 1;
+    const pillW = w / dpr;
+    const pillH = h / dpr;
+    const radius = pillH / 2; // pill shape = half-height radius
+    ctx.beginPath();
+    ctx.roundRect(0, 0, pillW, pillH, radius);
+    ctx.clip();
+
     const speed = 0.4 + energy * 0.6;
     const brightness = 0.25 + energy * 0.25;
 
@@ -96,6 +106,7 @@
       ctx.fill();
       ctx.restore();
     }
+    ctx.restore(); // restore the pill clip
   }
 
   function loop(timestamp: number) {
@@ -122,8 +133,8 @@
     const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.scale(dpr, dpr);
-      // Apply Gaussian blur via CSS filter on the canvas context
-      ctx.filter = 'blur(55px)';
+      // Apply Gaussian blur — reduced from 55px since canvas is clipped to pill shape
+      ctx.filter = 'blur(30px)';
     }
 
     startTime = 0;
@@ -163,6 +174,7 @@
     inset: 0;
     pointer-events: none;
     overflow: hidden;
+    border-radius: inherit; /* inherit pill's border-radius to clip */
   }
 
   .lava-lamp-wrapper canvas {

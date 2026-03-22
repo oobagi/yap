@@ -227,12 +227,6 @@
 </script>
 
 <div class="overlay-container">
-  <!-- Lava lamp gradient background -->
-  <LavaLamp
-    energy={gradientEnergy}
-    visible={showGradient}
-  />
-
   <!-- Vertical stack: onboarding card, timer, pill -->
   <div
     class="pill-wrapper"
@@ -279,6 +273,12 @@
     >
       <!-- Glass background layer -->
       <div class="pill-glass"></div>
+
+      <!-- Lava lamp gradient (inside pill, clipped to pill shape) -->
+      <LavaLamp
+        energy={gradientEnergy}
+        visible={showGradient}
+      />
 
       <!-- Pill Content -->
       {#if showHoldPrompt}
