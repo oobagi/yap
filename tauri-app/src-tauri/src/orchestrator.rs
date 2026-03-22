@@ -702,10 +702,19 @@ pub fn init(app: &AppHandle) {
 
     // Start hotkey listener
     let modifier = parse_hotkey_modifier(&cfg.hotkey);
+    log::info(&format!("Starting hotkey: {:?}", modifier));
     start_hotkey_listener(Arc::clone(&orch), modifier);
 
     // Start audio level poller
     start_level_poller(Arc::clone(&orch));
+
+    // Show overlay window (always-visible pill in idle state)
+    if let Some(overlay) = app.get_webview_window("overlay") {
+        let _ = overlay.show();
+        log::info("Overlay window shown");
+    } else {
+        log::info("WARNING: overlay window not found");
+    }
 
     log::info("Orchestrator initialized -- ready");
 }

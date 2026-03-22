@@ -211,10 +211,11 @@ mod platform {
                     }
 
                     if tap.is_null() {
-                        eprintln!("failed to create CGEventTap -- accessibility permission required");
+                        eprintln!("[yap] HOTKEY FAILED: add this app to System Settings → Privacy & Security → Accessibility");
                         RUNNING.store(false, Ordering::SeqCst);
                         return;
                     }
+                    eprintln!("[yap] Hotkey CGEventTap created successfully");
 
                     let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0);
                     if source.is_null() {
