@@ -715,8 +715,8 @@ pub fn init(app: &AppHandle) {
             if let Some(monitor) = monitor {
                 let screen = monitor.size();
                 let scale = monitor.scale_factor();
-                let win_w = 400.0;
-                let win_h = 200.0;
+                let win_w = 800.0;
+                let win_h = 350.0;
                 let x = ((screen.width as f64 / scale) - win_w) / 2.0;
                 let y = (screen.height as f64 / scale) - win_h;
                 let _ = overlay.set_position(tauri::PhysicalPosition::new(

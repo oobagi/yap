@@ -12,42 +12,42 @@
   let startTime: number = 0;
 
   // Blob definitions — colors, sizes, and Lissajous parameters
-  // Blob sizes/amplitudes scaled for 400x200 window (vs original 1400x700)
+  // Blob sizes/amplitudes for 800x350 window, centered around pill at bottom
   const blobs = [
     {
       color: [147, 51, 234],  // purple
-      width: 120,
-      height: 80,
+      width: 200,
+      height: 100,
       xFreq: 0.7, yFreq: 0.5,
-      xAmp: 60, yAmp: 25,
+      xAmp: 100, yAmp: 40,
       xPhase: 0, yPhase: 0,
       brightnessScale: 1.0,
     },
     {
       color: [59, 130, 246],  // blue
-      width: 140,
-      height: 90,
+      width: 240,
+      height: 120,
       xFreq: 0.6, yFreq: 0.45,
-      xAmp: 70, yAmp: 30,
+      xAmp: 120, yAmp: 45,
       xPhase: 1.5, yPhase: 1.0,
       brightnessScale: 0.9,
       xUseSin: true,
     },
     {
       color: [34, 211, 238],  // cyan
-      width: 110,
-      height: 70,
+      width: 180,
+      height: 90,
       xFreq: 0.8, yFreq: 0.6,
-      xAmp: 50, yAmp: 20,
+      xAmp: 80, yAmp: 35,
       xPhase: 3.0, yPhase: 2.0,
       brightnessScale: 0.85,
     },
     {
       color: [99, 102, 241],  // indigo
-      width: 130,
-      height: 75,
+      width: 220,
+      height: 100,
       xFreq: 0.55, yFreq: 0.7,
-      xAmp: 65, yAmp: 25,
+      xAmp: 110, yAmp: 40,
       xPhase: 4.5, yPhase: 3.5,
       brightnessScale: 0.9,
       xUseSin: true,
@@ -57,8 +57,10 @@
   function render(ctx: CanvasRenderingContext2D, t: number) {
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
+    const dpr = window.devicePixelRatio || 1;
     const cx = w / 2;
-    const cy = h / 2;
+    // Center blobs around the pill position (near bottom of window, not geometric center)
+    const cy = h - (60 * dpr);
 
     ctx.clearRect(0, 0, w, h);
 
