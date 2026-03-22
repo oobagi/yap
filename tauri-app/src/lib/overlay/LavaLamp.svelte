@@ -14,7 +14,7 @@
   let slideStart = 0;
   let slideFrom = 60;
   let slideTo = 0;
-  const SLIDE_DURATION = 300; // ms
+  const SLIDE_DURATION = 450; // ms
 
   const blobs = [
     { color: '147, 51, 234',  offsetX: -8,  offsetY: -3,  size: 220, scale: 1.0  },
