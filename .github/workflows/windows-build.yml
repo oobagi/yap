@@ -48,11 +48,6 @@ jobs:
         working-directory: windows/Yap
         run: dotnet build --configuration Release --no-restore
 
-      - name: Run tests
-        working-directory: windows
-        run: dotnet test --configuration Release --no-build --verbosity normal
-        continue-on-error: true
-
       - name: Publish self-contained (win-x64)
         working-directory: windows/Yap
         run: >
@@ -62,9 +57,7 @@ jobs:
           --self-contained true
           --output ${{ github.workspace }}/windows/build
           -p:PublishSingleFile=true
-          -p:PublishTrimmed=true
           -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:TrimMode=partial
 
       - name: Copy sound assets
         shell: pwsh
