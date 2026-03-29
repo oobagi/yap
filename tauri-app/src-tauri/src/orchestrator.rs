@@ -127,7 +127,7 @@ impl OrchestratorInner {
 
     /// Emit an error event to the frontend.
     fn emit_error(&self, message: &str) {
-        let _ = self.app.emit("pipeline:error", ErrorPayload { message: message.to_string() });
+        let _ = self.app.emit("error:show", ErrorPayload { message: message.to_string() });
     }
 
     /// Emit audio levels to the frontend.
@@ -248,8 +248,7 @@ impl Orchestrator {
             let _ = audio::stop_recording(); // discard
             let mut inner = self.inner.lock().unwrap();
             inner.state = AppState::Idle;
-            inner.emit_state();
-            inner.emit_error("hold_tip");
+            inner.emit_error("Hold longer to record");
             return;
         }
 
@@ -459,8 +458,25 @@ impl Orchestrator {
             log::info(&format!("Silence detected (peak {:.3}) -- skipping", peak));
             let mut inner = self.inner.lock().unwrap();
             inner.state = AppState::Idle;
-            inner.emit_state();
-            inner.emit_error("speak_tip");
+            inner.emit_error("No speech detected");
+            return;
+        }
+
+        let cfg = config::get();
+
+        // Pre-flight: check that a transcription provider + API key are configured
+        if cfg.tx_provider == TranscriptionProvider::None || cfg.tx_api_key.is_empty() {
+            log::info("No transcription provider or API key configured");
+            let app = self.app_handle();
+            let mut inner = self.inner.lock().unwrap();
+            inner.state = AppState::Idle;
+            inner.emit_error("Set up an API key in Settings");
+            drop(inner);
+            // Auto-open settings window
+            if let Some(win) = app.get_webview_window("settings") {
+                let _ = win.show();
+                let _ = win.set_focus();
+            }
             return;
         }
 
@@ -475,7 +491,6 @@ impl Orchestrator {
         let app = self.app_handle();
         let orch = app.state::<Arc<Orchestrator>>();
         let orch = Arc::clone(&orch);
-        let cfg = config::get();
 
         tauri::async_runtime::spawn(async move {
             let result = process_audio_pipeline(&wav_path, &cfg).await;
@@ -510,18 +525,21 @@ impl Orchestrator {
                             log::info(&format!("Paste failed: {e}"));
                         }
                     }
+
+                    // Return to idle
+                    let mut inner = orch.inner.lock().unwrap();
+                    inner.state = AppState::Idle;
+                    inner.emit_state();
                 }
                 Err(e) => {
                     log::info(&format!("Pipeline error: {e}"));
-                    let inner = orch.inner.lock().unwrap();
+                    // Set internal state to idle but show error to frontend.
+                    // Frontend auto-dismisses the error back to idle after 2s.
+                    let mut inner = orch.inner.lock().unwrap();
+                    inner.state = AppState::Idle;
                     inner.emit_error(&classify_error(&e));
                 }
             }
-
-            // Return to idle
-            let mut inner = orch.inner.lock().unwrap();
-            inner.state = AppState::Idle;
-            inner.emit_state();
         });
     }
 }
@@ -818,6 +836,15 @@ pub fn init(app: &AppHandle) {
     }
 
     log::info("Orchestrator initialized -- ready");
+
+    // First-launch: if no API key is configured, open settings automatically
+    if cfg.tx_api_key.is_empty() {
+        log::info("No API key configured -- opening settings");
+        if let Some(settings_win) = app.get_webview_window("settings") {
+            let _ = settings_win.show();
+            let _ = settings_win.set_focus();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -173,9 +173,8 @@
     if (overlayData.mode === 'error') {
       clearTimeout(errorTimeout);
       errorTimeout = setTimeout(() => {
-        // The backend handles actual dismissal via state:change event
-        // This just provides a visual fallback
-      }, 2000);
+        overlayData.mode = 'idle';
+      }, 2500);
     }
 
     return () => {
@@ -199,9 +198,8 @@
 
   function onPillClick() {
     if (overlayData.mode !== 'recording' && overlayData.mode !== 'processing') {
-      // Emit click-to-record event back to Tauri
-      import('@tauri-apps/api/event').then(({ emit }) => {
-        emit('overlay:click-to-record');
+      import('@tauri-apps/api/core').then(({ invoke }) => {
+        invoke('pill_clicked');
       });
     }
   }
@@ -216,15 +214,15 @@
 
   function onPauseClick(e: MouseEvent) {
     e.stopPropagation();
-    import('@tauri-apps/api/event').then(({ emit }) => {
-      emit('overlay:pause-resume');
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('pause_resume');
     });
   }
 
   function onStopClick(e: MouseEvent) {
     e.stopPropagation();
-    import('@tauri-apps/api/event').then(({ emit }) => {
-      emit('overlay:stop');
+    import('@tauri-apps/api/core').then(({ invoke }) => {
+      invoke('stop_hands_free');
     });
   }
 </script>
