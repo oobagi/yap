@@ -14,9 +14,6 @@ use rand::prelude::IndexedRandom;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-#[cfg(not(target_os = "macos"))]
-use tauri::Listener;
-
 use crate::audio::{self, AudioLevels};
 use crate::config::{self, AppConfig};
 use crate::formatting::{self, FormattingOptions, FormattingProvider};
@@ -251,6 +248,19 @@ impl OrchestratorInner {
             paused: paused.unwrap_or(false),
             elapsed: elapsed.unwrap_or(0.0),
         });
+
+        // Send to native Win32 overlay on Windows
+        #[cfg(target_os = "windows")]
+        {
+            let s = state_str.to_string();
+            let hf = hands_free.unwrap_or(false);
+            let p = paused.unwrap_or(false);
+            crate::win_overlay::update_state(|st| {
+                st.mode = s;
+                st.hands_free = hf;
+                st.paused = p;
+            });
+        }
     }
 
     /// Emit an error event to the frontend.
@@ -260,6 +270,14 @@ impl OrchestratorInner {
         crate::sidecar::send(&crate::sidecar::OutMessage::Error {
             message: message.to_string(),
         });
+        #[cfg(target_os = "windows")]
+        {
+            let msg = message.to_string();
+            crate::win_overlay::update_state(|st| {
+                st.mode = "error".into();
+                st.error = Some(msg);
+            });
+        }
     }
 
     /// Emit audio levels to the frontend.
@@ -270,6 +288,15 @@ impl OrchestratorInner {
             level: levels.level,
             bars: levels.bars.to_vec(),
         });
+        #[cfg(target_os = "windows")]
+        {
+            let l = levels.level;
+            let b = levels.bars;
+            crate::win_overlay::update_state(|st| {
+                st.level = l;
+                st.bars = b;
+            });
+        }
     }
 
     /// Emit onboarding step change to the frontend.
@@ -1376,36 +1403,25 @@ pub fn init(app: &AppHandle) {
             .ok();
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "windows")]
     {
-        // Show WebView overlay window (Windows/Linux)
+        // Destroy the WebView overlay — Windows uses a native Win32 pill instead
         if let Some(overlay) = app.get_webview_window("overlay") {
-            if let Ok(monitor) = overlay.primary_monitor() {
-                if let Some(monitor) = monitor {
-                    let screen = monitor.size();
-                    let scale = monitor.scale_factor();
-                    let win_w = 660.0;
-                    let win_h = 200.0;
-                    let x = ((screen.width as f64 / scale) - win_w) / 2.0;
-                    let y = (screen.height as f64 / scale) - win_h;
-                    let _ = overlay.set_position(tauri::PhysicalPosition::new(
-                        (x * scale) as i32,
-                        (y * scale) as i32,
-                    ));
-                    log::info(&format!("Overlay positioned at {},{} (screen {}x{}, scale {})", x as i32, y as i32, screen.width, screen.height, scale));
-                }
-            }
-            let _ = overlay.show();
-            log::info("Overlay window shown");
-        } else {
-            log::info("WARNING: overlay window not found");
+            let _ = overlay.destroy();
         }
 
+        // Spawn native Win32 overlay (layered window + tiny-skia rendering)
+        crate::win_overlay::spawn(app);
+
         let orch2 = Arc::clone(&orch);
-        app.listen("overlay:ready", move |_| {
-            log::info("Overlay ready -- starting onboarding check");
-            orch2.start_onboarding_if_needed();
-        });
+        std::thread::Builder::new()
+            .name("yap-win-overlay-wait".into())
+            .spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                log::info("Win32 overlay ready -- starting onboarding check");
+                orch2.start_onboarding_if_needed();
+            })
+            .ok();
     }
 
     log::info("Orchestrator initialized -- ready");

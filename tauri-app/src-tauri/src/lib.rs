@@ -9,6 +9,8 @@ mod sidecar;
 mod speech;
 mod transcription;
 mod tray;
+#[cfg(target_os = "windows")]
+mod win_overlay;
 
 use std::sync::Arc;
 
