@@ -288,6 +288,30 @@
     onboardingComplete = false;
   }
 
+  function resetDefaults() {
+    hotkey = 'fn';
+    txProvider = 'none';
+    txApiKey = '';
+    txModel = '';
+    fmtProvider = 'none';
+    fmtApiKey = '';
+    fmtModel = '';
+    fmtStyle = 'casual';
+    onboardingComplete = false;
+    dgSmartFormat = true;
+    dgKeywords = '';
+    dgLanguage = '';
+    oaiLanguage = '';
+    oaiPrompt = '';
+    geminiTemperature = 0;
+    elLanguageCode = '';
+    soundsEnabled = true;
+    gradientEnabled = true;
+    alwaysVisiblePill = true;
+    historyEnabled = true;
+    speechLocale = '';
+  }
+
   // ── Init ──────────────────────────────────────────────────────────────
 
   // Load config immediately on mount.
@@ -757,6 +781,9 @@
     <!-- ── Footer ─────────────────────────────────────────────────────── -->
     <div class="settings-footer">
       <div class="settings-footer-left">
+        <button class="btn btn-danger-ghost" onclick={resetDefaults} type="button">
+          Reset Defaults
+        </button>
         <button class="btn btn-danger-ghost" onclick={resetOnboarding} type="button">
           Reset Onboarding
         </button>
