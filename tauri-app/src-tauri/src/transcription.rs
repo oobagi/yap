@@ -301,7 +301,14 @@ async fn transcribe_deepgram(
     if !options.dg_language.is_empty() {
         params.push(format!("language={}", options.dg_language));
     }
-    // Keyword boosting
+    // Deepgram Nova-3 renamed keyword boosting from `keywords` to `keyterm`.
+    let boost_param = if model.to_lowercase().contains("nova-3") {
+        "keyterm"
+    } else {
+        "keywords"
+    };
+
+    // Keyword/keyterm boosting
     for kw in options
         .dg_keywords
         .split(',')
@@ -309,7 +316,8 @@ async fn transcribe_deepgram(
         .filter(|s| !s.is_empty())
     {
         params.push(format!(
-            "keywords={}",
+            "{}={}",
+            boost_param,
             urlencoding_simple(kw)
         ));
     }

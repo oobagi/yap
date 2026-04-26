@@ -5,7 +5,8 @@ use rustfft::FftPlanner;
 use std::io::BufWriter;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
 
 /// Current real-time audio levels sent to the overlay.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -56,19 +57,18 @@ static PAUSED: AtomicBool = AtomicBool::new(false);
 static WAV_PATH: once_cell::sync::Lazy<Mutex<Option<PathBuf>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
-/// Start recording from the default input device.
+/// Start recording from the configured input device, or the system default.
 ///
 /// Audio is written to a temporary 16-bit PCM WAV file. Real-time FFT
 /// levels are computed and can be polled via `get_levels()`.
-pub fn start_recording() -> Result<PathBuf, String> {
+pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
     if RECORDING.load(Ordering::SeqCst) {
         return Err("recording already in progress".into());
     }
 
     let host = cpal::default_host();
-    let device = host
-        .default_input_device()
-        .ok_or_else(|| "no default input device available".to_string())?;
+    let device = resolve_input_device(&host, device_name)?;
+    let resolved_device_name = device.name().unwrap_or_else(|_| "unknown input device".to_string());
 
     let config = device
         .default_input_config()
@@ -76,6 +76,12 @@ pub fn start_recording() -> Result<PathBuf, String> {
 
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as u32;
+    let sample_format = config.sample_format();
+    let stream_config: cpal::StreamConfig = config.clone().into();
+
+    log_audio(&format!(
+        "Starting audio: device={resolved_device_name:?}, sample_rate={sample_rate}, channels={channels}, sample_format={sample_format:?}"
+    ));
 
     let wav_path = std::env::temp_dir().join("yap_recording.wav");
 
@@ -111,14 +117,15 @@ pub fn start_recording() -> Result<PathBuf, String> {
     let writer_ref = WAV_WRITER.clone();
     let levels_ref = CURRENT_LEVELS.clone();
     let peak_ref = PEAK_LEVEL.clone();
+    let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
 
     // Build the stream on a dedicated thread (cpal::Stream is !Send,
     // so it must live on the thread that created it).
-    std::thread::Builder::new()
+    let thread = std::thread::Builder::new()
         .name("yap-audio".into())
         .spawn(move || {
             let err_fn = |err: cpal::StreamError| {
-                eprintln!("audio stream error: {err}");
+                log_audio(&format!("audio stream error: {err}"));
             };
 
             // Accumulate samples for FFT across callbacks
@@ -131,9 +138,9 @@ pub fn start_recording() -> Result<PathBuf, String> {
             let fft_buf_cb = fft_buffer.clone();
             let sr = sample_rate;
 
-            let stream_result = match config.sample_format() {
+            let stream_result = match sample_format {
                 cpal::SampleFormat::F32 => device.build_input_stream(
-                    &config.into(),
+                    &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
                         process_audio_callback(data, channels, sr, &writer_cb, &levels_cb, &peak_cb, &fft_buf_cb);
                     },
@@ -141,7 +148,7 @@ pub fn start_recording() -> Result<PathBuf, String> {
                     None,
                 ),
                 cpal::SampleFormat::I16 => device.build_input_stream(
-                    &config.into(),
+                    &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         // Convert i16 to f32
                         let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
@@ -151,7 +158,7 @@ pub fn start_recording() -> Result<PathBuf, String> {
                     None,
                 ),
                 cpal::SampleFormat::U16 => device.build_input_stream(
-                    &config.into(),
+                    &stream_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
                         // Convert u16 to f32
                         let f32_data: Vec<f32> = data
@@ -164,8 +171,10 @@ pub fn start_recording() -> Result<PathBuf, String> {
                     None,
                 ),
                 _ => {
-                    eprintln!("unsupported sample format");
+                    let message = format!("unsupported input sample format: {sample_format:?}");
+                    log_audio(&message);
                     RECORDING.store(false, Ordering::SeqCst);
+                    let _ = ready_tx.send(Err(message));
                     return;
                 }
             };
@@ -173,17 +182,23 @@ pub fn start_recording() -> Result<PathBuf, String> {
             let stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    eprintln!("failed to build input stream: {e}");
+                    let message = format!("failed to build input stream: {e}");
+                    log_audio(&message);
                     RECORDING.store(false, Ordering::SeqCst);
+                    let _ = ready_tx.send(Err(message));
                     return;
                 }
             };
 
             if let Err(e) = stream.play() {
-                eprintln!("failed to start audio stream: {e}");
+                let message = format!("failed to start audio stream: {e}");
+                log_audio(&message);
                 RECORDING.store(false, Ordering::SeqCst);
+                let _ = ready_tx.send(Err(message));
                 return;
             }
+
+            let _ = ready_tx.send(Ok(()));
 
             // Keep the stream alive until stop is signaled
             while !STOP_FLAG.load(Ordering::SeqCst) {
@@ -197,7 +212,98 @@ pub fn start_recording() -> Result<PathBuf, String> {
         })
         .map_err(|e| format!("failed to spawn audio thread: {e}"))?;
 
+    match ready_rx.recv_timeout(Duration::from_secs(2)) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            cleanup_failed_start();
+            return Err(e);
+        }
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            STOP_FLAG.store(true, Ordering::SeqCst);
+            cleanup_failed_start();
+            return Err("audio stream start timed out".to_string());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            cleanup_failed_start();
+            return Err("audio thread exited before starting".to_string());
+        }
+    }
+
+    drop(thread);
+
     Ok(wav_path)
+}
+
+fn resolve_input_device(
+    host: &cpal::Host,
+    device_name: Option<&str>,
+) -> Result<cpal::Device, String> {
+    let requested = device_name.map(str::trim).filter(|name| !name.is_empty());
+
+    if let Some(name) = requested {
+        match host.input_devices() {
+            Ok(mut devices) => {
+                if let Some(device) = devices.find(|device| {
+                    device
+                        .name()
+                        .map(|candidate| candidate == name)
+                        .unwrap_or(false)
+                }) {
+                    return Ok(device);
+                }
+                log_audio(&format!(
+                    "Configured input device {name:?} was not found; falling back to system default"
+                ));
+            }
+            Err(e) => {
+                log_audio(&format!(
+                    "Failed to enumerate input devices while looking for {name:?}: {e}"
+                ));
+            }
+        }
+    }
+
+    host.default_input_device()
+        .ok_or_else(|| "no default input device available".to_string())
+}
+
+fn cleanup_failed_start() {
+    RECORDING.store(false, Ordering::SeqCst);
+    PAUSED.store(false, Ordering::SeqCst);
+    STOP_FLAG.store(true, Ordering::SeqCst);
+
+    if let Ok(mut guard) = WAV_WRITER.lock() {
+        if let Some(writer) = guard.take() {
+            let _ = writer.finalize();
+        }
+    }
+
+    if let Ok(mut path) = WAV_PATH.lock() {
+        *path = None;
+    }
+
+    if let Ok(mut levels) = CURRENT_LEVELS.lock() {
+        *levels = AudioLevels::default();
+    }
+
+    if let Ok(mut peak) = PEAK_LEVEL.lock() {
+        *peak = 0.0;
+    }
+}
+
+fn log_audio(message: &str) {
+    eprintln!("[yap audio] {message}");
+
+    if let Ok(dir) = crate::config::config_dir() {
+        let path = dir.join("debug.log");
+        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let line = format!("[{timestamp}] [audio] {message}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, line.as_bytes()));
+    }
 }
 
 /// Process incoming audio data from the input stream callback.
@@ -336,8 +442,16 @@ pub fn get_levels() -> AudioLevels {
 pub fn list_devices() -> Vec<String> {
     let host = cpal::default_host();
     match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
-        Err(_) => vec![],
+        Ok(devices) => {
+            let mut names: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
+            names.sort();
+            names.dedup();
+            names
+        }
+        Err(e) => {
+            log_audio(&format!("failed to list input devices: {e}"));
+            vec![]
+        }
     }
 }
 

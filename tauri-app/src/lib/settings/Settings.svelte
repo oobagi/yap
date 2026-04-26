@@ -16,6 +16,7 @@
 
   interface AppConfig {
     hotkey: string;
+    audioDevice: string;
     txProvider: string;
     txApiKey: string;
     txModel: string;
@@ -176,6 +177,7 @@
     try {
       const cfg = await invoke<AppConfig>('get_config');
       hotkey = cfg.hotkey;
+      selectedMic = cfg.audioDevice ?? '';
       txProvider = cfg.txProvider;
       txApiKey = cfg.txApiKey;
       txModel = cfg.txModel;
@@ -206,8 +208,8 @@
     try {
       const devices = await invoke<string[]>('list_audio_devices');
       microphones = devices;
-      if (devices.length > 0 && !selectedMic) {
-        selectedMic = devices[0];
+      if (selectedMic && !devices.includes(selectedMic)) {
+        microphones = [selectedMic, ...devices];
       }
     } catch (e) {
       console.error('Failed to list audio devices:', e);
@@ -223,6 +225,7 @@
     try {
       const cfg: AppConfig = {
         hotkey,
+        audioDevice: selectedMic,
         txProvider,
         txApiKey,
         txModel,
@@ -302,6 +305,7 @@
 
   function resetDefaults() {
     hotkey = 'fn';
+    selectedMic = '';
     txProvider = 'none';
     txApiKey = '';
     txModel = '';
@@ -388,6 +392,7 @@
           <div class="field-row">
             <span class="field-label">Microphone</span>
             <select class="select" bind:value={selectedMic}>
+              <option value="">System Default</option>
               {#each microphones as mic}
                 <option value={mic}>{mic}</option>
               {/each}

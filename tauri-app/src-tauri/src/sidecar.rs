@@ -191,6 +191,7 @@ pub fn spawn(app: &tauri::AppHandle) {
 
 // Stub for non-macOS
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 pub fn spawn(_app: &tauri::AppHandle) {}
 
 // ---------------------------------------------------------------------------

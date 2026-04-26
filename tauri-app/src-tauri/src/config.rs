@@ -14,6 +14,10 @@ pub struct AppConfig {
     #[serde(default = "default_hotkey")]
     pub hotkey: String,
 
+    /// Preferred input device name. Empty string means "system default".
+    #[serde(default)]
+    pub audio_device: String,
+
     /// Transcription provider
     #[serde(default)]
     pub tx_provider: TranscriptionProvider,
@@ -123,6 +127,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             hotkey: default_hotkey(),
+            audio_device: String::new(),
             tx_provider: TranscriptionProvider::default(),
             tx_api_key: String::new(),
             tx_model: String::new(),

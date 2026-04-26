@@ -41,7 +41,9 @@ fn save_config(cfg: AppConfig, orch: tauri::State<'_, Arc<Orchestrator>>) -> Res
 /// Start recording audio from the default input device.
 #[tauri::command]
 fn start_recording() -> Result<String, String> {
-    let path = audio::start_recording()?;
+    let cfg = config::get();
+    let device = cfg.audio_device.trim();
+    let path = audio::start_recording((!device.is_empty()).then_some(device))?;
     Ok(path.to_string_lossy().to_string())
 }
 

@@ -1,9 +1,10 @@
 fn main() {
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+
     // Build the native overlay sidecar on macOS (release builds only).
     // In dev mode (`cargo run`), the sidecar is found at its debug build
     // path — run `swift build` once in sidecar-overlay/ to set it up.
-    #[cfg(target_os = "macos")]
-    {
+    if target_os == "macos" {
         let profile = std::env::var("PROFILE").unwrap_or_default();
         if profile == "release" {
             let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -23,6 +24,7 @@ fn main() {
     tauri_build::build();
 
     // Link the Speech framework on macOS for SFSpeechRecognizer
-    #[cfg(target_os = "macos")]
-    println!("cargo:rustc-link-lib=framework=Speech");
+    if target_os == "macos" {
+        println!("cargo:rustc-link-lib=framework=Speech");
+    }
 }

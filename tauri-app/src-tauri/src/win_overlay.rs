@@ -23,6 +23,10 @@ use std::time::Instant;
 
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
+use windows::Win32::UI::Controls::WM_MOUSELEAVE;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::*;
 
@@ -111,6 +115,7 @@ impl Spring {
         self.target = t;
     }
 
+    #[allow(dead_code)]
     fn snap(&mut self, v: f32) {
         self.current = v;
         self.target = v;
@@ -163,6 +168,7 @@ pub struct OverlayState {
     pub always_visible: bool,
 
     // Celebration
+    #[allow(dead_code)]
     pub celebrating: bool,
 
     // Pressed state (onboarding key press visual)
@@ -385,6 +391,7 @@ impl FontRenderer {
                 let settings = fontdue::FontSettings {
                     collection_index: 0,
                     scale: 40.0,
+                    load_substitutions: true,
                 };
                 if let Ok(font) = fontdue::Font::from_bytes(data, settings) {
                     return Some(Self { font });
@@ -476,7 +483,7 @@ impl FontRenderer {
 // ---------------------------------------------------------------------------
 
 static STATE: OnceLock<Arc<Mutex<OverlayState>>> = OnceLock::new();
-static HWND_CELL: OnceLock<HWND> = OnceLock::new();
+static HWND_CELL: OnceLock<isize> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Public API (called from orchestrator thread)
@@ -488,9 +495,10 @@ pub fn update_state(f: impl FnOnce(&mut OverlayState)) {
         f(&mut s);
     }
     // Trigger re-render on the overlay thread
-    if let Some(&hwnd) = HWND_CELL.get() {
+    if let Some(&raw_hwnd) = HWND_CELL.get() {
+        let hwnd = HWND(raw_hwnd as *mut std::ffi::c_void);
         unsafe {
-            let _ = PostMessageW(Some(hwnd), WM_YAP_UPDATE, WPARAM(0), LPARAM(0));
+            let _ = PostMessageW(hwnd, WM_YAP_UPDATE, WPARAM(0), LPARAM(0));
         }
     }
 }
@@ -571,7 +579,7 @@ unsafe fn run_window_loop() {
     )
     .unwrap();
 
-    let _ = HWND_CELL.set(hwnd);
+    let _ = HWND_CELL.set(hwnd.0 as isize);
 
     // Initial render
     let font = FontRenderer::load();
@@ -581,7 +589,7 @@ unsafe fn run_window_loop() {
     let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
     // 33ms timer ≈ 30fps
-    let _ = SetTimer(Some(hwnd), 1, 33, None);
+    let _ = SetTimer(hwnd, 1, 33, None);
 
     // Store animation + font state in window's user data
     let ctx = Box::new(RenderContext { anim, font });
@@ -803,15 +811,6 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     };
     pixmap.stroke_path(&capsule, &border_paint, &stroke, Default::default(), None);
 
-    // Shadow (subtle dark glow behind pill)
-    if is_expanded {
-        let shadow = rounded_rect(pill_x - 2.0, pill_y + 2.0, pill_w + 4.0, pill_h + 4.0, pill_r + 2.0);
-        let mut shadow_paint = tiny_skia::Paint::default();
-        shadow_paint.set_color(tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.15).unwrap());
-        shadow_paint.anti_alias = true;
-        // Draw shadow behind (we'd need to draw before pill, but this is a simple approximation)
-    }
-
     // -- Pill content --
     let pill_content_cx = cx + shake_offset;
 
@@ -954,37 +953,6 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
 
     // Render each blob as a radial gradient ellipse
     for blob in &blobs {
-        let grad = tiny_skia::RadialGradient::new(
-            tiny_skia::Point::from_xy(blob.x, blob.y),
-            tiny_skia::Point::from_xy(blob.x, blob.y),
-            blob.rx, // Use the larger radius for the gradient
-        );
-        if let Some(grad) = grad {
-            // Draw a filled circle with radial gradient
-            let stops = vec![
-                tiny_skia::GradientStop::new(0.0, tiny_skia::Color::from_rgba(blob.r, blob.g, blob.b, blob.a).unwrap()),
-                tiny_skia::GradientStop::new(0.6, tiny_skia::Color::from_rgba(blob.r, blob.g, blob.b, blob.a * 0.4).unwrap()),
-                tiny_skia::GradientStop::new(1.0, tiny_skia::Color::from_rgba(blob.r, blob.g, blob.b, 0.0).unwrap()),
-            ];
-
-            if let Some(shader) = tiny_skia::RadialGradient::new(
-                tiny_skia::Point::from_xy(blob.x, blob.y),
-                tiny_skia::Point::from_xy(blob.x, blob.y),
-                blob.rx,
-            ) {
-                // Create the gradient shader manually
-                let shader = tiny_skia::LinearGradient::new(
-                    tiny_skia::Point::from_xy(0.0, 0.0),
-                    tiny_skia::Point::from_xy(1.0, 0.0),
-                    stops.clone(),
-                    tiny_skia::SpreadMode::Pad,
-                    tiny_skia::Transform::identity(),
-                );
-                // Actually, let's draw soft ellipses by compositing pixels directly
-                // This is simpler and gives us control over the elliptical shape
-            }
-        }
-
         // Direct pixel compositing for soft elliptical blobs (fast enough at this scale)
         let (bx0, by0) = ((blob.x - blob.rx * 1.5) as i32, (blob.y - blob.ry * 1.5) as i32);
         let (bx1, by1) = ((blob.x + blob.rx * 1.5) as i32, (blob.y + blob.ry * 1.5) as i32);
@@ -993,8 +961,8 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
         let bx1 = bx1.min(pixmap.width() as i32) as u32;
         let by1 = by1.min(pixmap.height() as i32) as u32;
 
-        let data = pixmap.data_mut();
         let pw = pixmap.width();
+        let data = pixmap.data_mut();
 
         for py in by0..by1 {
             for px in bx0..bx1 {
@@ -1323,7 +1291,7 @@ fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
         OnboardingStep::TryIt => format!("Hold {} and speak \u{2014} Yap transcribes it", hotkey_label),
         OnboardingStep::Nice => {
             let msgs = ["Nice!", "Nailed it!", "Sounds good!", "Got it!", "Perfect!", "Love it!"];
-            msgs[rand::random::<usize>() % msgs.len()].to_string()
+            msgs[rand::random::<u32>() as usize % msgs.len()].to_string()
         }
         OnboardingStep::DoubleTapTip => format!("Double-tap {} for hands-free transcription", hotkey_label),
         OnboardingStep::ClickTip => "Click the pill for hands-free transcription".to_string(),
@@ -1368,7 +1336,7 @@ fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> tiny_skia::Path {
 fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32) {
     unsafe {
         let hdc_screen = GetDC(None);
-        let hdc_mem = CreateCompatibleDC(Some(hdc_screen));
+        let hdc_mem = CreateCompatibleDC(hdc_screen);
 
         let bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -1384,7 +1352,7 @@ fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32
         };
 
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let hbm = CreateDIBSection(Some(hdc_mem), &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
+        let hbm = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
             .unwrap();
         let old = SelectObject(hdc_mem, hbm);
 
@@ -1398,11 +1366,11 @@ fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32
             dst[i + 3] = src[i + 3]; // A
         }
 
-        let mut pt_src = POINT { x: 0, y: 0 };
-        let mut size = SIZE { cx: w as i32, cy: h as i32 };
+        let pt_src = POINT { x: 0, y: 0 };
+        let size = SIZE { cx: w as i32, cy: h as i32 };
         let mut rect = RECT::default();
         let _ = GetWindowRect(hwnd, &mut rect);
-        let mut pt_dst = POINT { x: rect.left, y: rect.top };
+        let pt_dst = POINT { x: rect.left, y: rect.top };
 
         let blend = BLENDFUNCTION {
             BlendOp: 0,
@@ -1413,11 +1381,11 @@ fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32
 
         let _ = UpdateLayeredWindow(
             hwnd,
-            Some(hdc_screen),
-            Some(&mut pt_dst),
-            Some(&mut size),
-            Some(hdc_mem),
-            Some(&mut pt_src),
+            hdc_screen,
+            Some(&pt_dst),
+            Some(&size),
+            hdc_mem,
+            Some(&pt_src),
             COLORREF(0),
             Some(&blend),
             ULW_ALPHA,
@@ -1426,6 +1394,6 @@ fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32
         SelectObject(hdc_mem, old);
         let _ = DeleteObject(hbm);
         let _ = DeleteDC(hdc_mem);
-        ReleaseDC(None, hdc_screen);
+        let _ = ReleaseDC(None, hdc_screen);
     }
 }

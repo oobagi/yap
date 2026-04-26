@@ -4,7 +4,6 @@ import { sveltekit } from "@sveltejs/kit/vite";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
 
 /** Standalone HTML pages used by secondary Tauri windows (not SvelteKit routes). */
@@ -35,12 +34,13 @@ function tauriMultiWindow() {
       const paths = standalonePages.map((p) => `/${p}.html`);
 
       server.middlewares.use((req, res, next) => {
-        if (paths.includes(req.url)) {
-          let html = readFileSync(resolve("src" + req.url), "utf-8");
+        const url = req.url;
+        if (url && paths.includes(url)) {
+          let html = readFileSync(resolve("src" + url), "utf-8");
           // Rewrite relative script/link paths to /src/ so Vite can resolve them
           html = html.replace(/src="\.\/([^"]+)"/g, 'src="/src/$1"');
           html = html.replace(/href="\.\/([^"]+)"/g, 'href="/src/$1"');
-          server.transformIndexHtml(req.url, html).then((transformed) => {
+          server.transformIndexHtml(url, html).then((transformed) => {
             res.setHeader("Content-Type", "text/html");
             res.end(transformed);
           });

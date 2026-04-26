@@ -483,7 +483,7 @@ impl Orchestrator {
 
     /// Internal helper to start audio capture (shared by on_key_down paths).
     fn start_audio_capture(&self) {
-        match audio::start_recording() {
+        match start_configured_recording() {
             Ok(_path) => {
                 log::info("Recording started");
                 // Play start sound delayed 100ms
@@ -603,7 +603,7 @@ impl Orchestrator {
                     drop(inner);
                 }
 
-                match audio::start_recording() {
+                match start_configured_recording() {
                     Ok(_) => {
                         play_sound(&self.app_handle(), "Blow");
                         let mut inner = self.inner.lock().unwrap();
@@ -696,7 +696,7 @@ impl Orchestrator {
                 inner.emit_state();
                 drop(inner);
 
-                match audio::start_recording() {
+                match start_configured_recording() {
                     Ok(_) => {
                         play_sound(&self.app_handle(), "Blow");
                         let mut inner = self.inner.lock().unwrap();
@@ -1176,6 +1176,12 @@ impl Orchestrator {
 // Async pipeline: transcribe -> format -> return text
 // ---------------------------------------------------------------------------
 
+fn start_configured_recording() -> Result<PathBuf, String> {
+    let cfg = config::get();
+    let device = cfg.audio_device.trim();
+    audio::start_recording((!device.is_empty()).then_some(device))
+}
+
 async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<String, String> {
     let tx_options = TranscriptionOptions {
         api_key: cfg.tx_api_key.clone(),
@@ -1281,7 +1287,17 @@ fn classify_error(error: &str) -> String {
     let lower = error.to_lowercase();
     if lower.contains("quota") || lower.contains("rate") || lower.contains("429") {
         "Rate limited -- try again".to_string()
-    } else if lower.contains("auth") || lower.contains("key") || lower.contains("401") || lower.contains("403") {
+    } else if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("unauthorized")
+        || lower.contains("forbidden")
+        || lower.contains("authentication")
+        || lower.contains("authorization")
+        || lower.contains("invalid api key")
+        || lower.contains("api key invalid")
+        || lower.contains("missing api key")
+        || lower.contains("invalid token")
+    {
         "Invalid API key".to_string()
     } else if lower.contains("timed out") || lower.contains("timeout") {
         "Request timed out".to_string()

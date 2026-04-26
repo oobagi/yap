@@ -67,11 +67,11 @@ core-graphics = "0.24"
 objc2 = "0.6"
 block2 = "0.6"
 
-# 2D rendering for native overlay pill (Windows)
-tiny-skia = "0.11"
-
 [target.'cfg(target_os = "windows")'.dependencies]
+# 2D rendering for native overlay pill
+tiny-skia = "0.11"
 windows = { version = "0.58", features = [
+    "Win32_UI_Controls",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
     "Win32_Foundation",
