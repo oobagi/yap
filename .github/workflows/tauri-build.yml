@@ -70,7 +70,7 @@ jobs:
 
       - name: Install frontend dependencies
         working-directory: tauri-app
-        run: npm install
+        run: npm ci
 
       - name: Build Tauri app
         working-directory: tauri-app
