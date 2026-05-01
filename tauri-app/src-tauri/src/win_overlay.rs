@@ -19,16 +19,14 @@
 #![cfg(target_os = "windows")]
 
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    TrackMouseEvent, TRACKMOUSEEVENT, TME_LEAVE,
-};
+use windows::Win32::UI::Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT};
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::*;
 
 use crate::orchestrator;
 
@@ -42,6 +40,19 @@ const CANVAS_H: i32 = 400;
 
 const WM_YAP_UPDATE: u32 = WM_USER + 1;
 
+const SLIDE_OFFSET_Y: f32 = 80.0;
+const PILL_CENTER_BOTTOM_INSET: f32 = 45.0;
+const HOVER_TOOLTIP_OFFSET_Y: f32 = -24.0;
+const CARD_GAP_Y: f32 = 50.0;
+const TIMER_GAP_Y: f32 = 40.0;
+const EXPANDED_PILL_SCALE: f32 = 0.82;
+const HOVER_PILL_SCALE: f32 = 0.58;
+const IDLE_PILL_SCALE: f32 = 0.5;
+const PROCESSING_SCALE: f32 = 0.8;
+const PRESS_SCALE: f32 = 0.85;
+const CELEBRATION_DURATION: Duration = Duration::from_millis(3000);
+const FULL_CIRCLE: f64 = std::f64::consts::PI * 2.0;
+
 // Pill geometry
 const BAR_COUNT: usize = 11;
 const BAR_W: f32 = 3.0;
@@ -49,6 +60,15 @@ const BAR_GAP: f32 = 2.0;
 const BAR_MIN_H: f32 = 5.0;
 const BAR_MAX_H: f32 = 28.0;
 const BARS_TOTAL_W: f32 = BAR_COUNT as f32 * BAR_W + (BAR_COUNT - 1) as f32 * BAR_GAP;
+
+const STANDARD_CONTENT_W: f32 = 76.0; // 52px bars + 12px horizontal padding on each side.
+const IDLE_CONTENT_W: f32 = 64.0; // 40px empty target + 12px horizontal padding on each side.
+const HANDS_FREE_CONTENT_W: f32 = 138.0; // 124px controls + 7px horizontal padding on each side.
+const EXPANDED_PILL_H: f32 = 40.0;
+const IDLE_PILL_H: f32 = 20.0;
+const PILL_HIT_PADDING: f32 = 12.0;
+const CONTROL_BUTTON_OFFSET: f32 = 49.0;
+const CONTROL_HIT_RADIUS: f32 = 17.0;
 
 const POSITION_SCALE: [f32; 11] = [
     0.35, 0.45, 0.6, 0.78, 0.92, 1.0, 0.94, 0.8, 0.63, 0.48, 0.38,
@@ -108,7 +128,13 @@ struct Spring {
 
 impl Spring {
     fn new(value: f32, stiffness: f32, damping: f32) -> Self {
-        Self { current: value, target: value, velocity: 0.0, stiffness, damping }
+        Self {
+            current: value,
+            target: value,
+            velocity: 0.0,
+            stiffness,
+            damping,
+        }
     }
 
     fn set_target(&mut self, t: f32) {
@@ -202,18 +228,19 @@ impl Default for OverlayState {
 
 struct AnimState {
     bar_springs: [Spring; 11],
-    pill_scale: Spring,        // 0.5 (minimized) → 1.0 (expanded)
-    pill_opacity: Spring,      // For fade in/out
-    gradient_energy: Spring,   // 0.0–1.0
-    hover_progress: Spring,    // 0→1 for hover transition
-    slide_y: Spring,           // Y offset for slide in/out
+    pill_scale: Spring,           // 0.5 (minimized) → 1.0 (expanded)
+    pill_opacity: Spring,         // For fade in/out
+    gradient_energy: Spring,      // 0.0–1.0
+    hover_progress: Spring,       // 0→1 for hover transition
+    slide_y: Spring,              // Y offset for slide in/out
     error_timer: Option<Instant>, // When error was shown
-    shake_progress: f32,       // 0→1 for no-speech shake
+    shake_progress: f32,          // 0→1 for no-speech shake
     shake_active: bool,
     celebration_start: Option<Instant>,
     prev_mode: String,
+    prev_onboarding_step: Option<OnboardingStep>,
     start_time: Instant,
-    visible: bool,             // Whether overlay should be visible at all
+    visible: bool, // Whether overlay should be visible at all
 }
 
 impl AnimState {
@@ -230,6 +257,7 @@ impl AnimState {
             shake_active: false,
             celebration_start: None,
             prev_mode: "idle".into(),
+            prev_onboarding_step: None,
             start_time: Instant::now(),
             visible: true,
         }
@@ -239,6 +267,7 @@ impl AnimState {
     fn tick(&mut self, state: &OverlayState, dt: f32) {
         let is_expanded = state.mode != "idle" || state.onboarding_step.is_some();
         let is_active = is_expanded;
+        let is_minimized = state.mode == "idle" && state.onboarding_step.is_none();
 
         // -- Mode transitions --
         if state.mode != self.prev_mode {
@@ -253,9 +282,23 @@ impl AnimState {
             }
             if state.mode == "idle" && !state.always_visible && state.onboarding_step.is_none() {
                 // Slide out
-                self.slide_y.set_target(80.0);
+                self.slide_y.set_target(SLIDE_OFFSET_Y);
             }
             self.prev_mode = state.mode.clone();
+        }
+
+        if state.onboarding_step != self.prev_onboarding_step {
+            if state.onboarding_step == Some(OnboardingStep::Nice) {
+                self.celebration_start = Some(Instant::now());
+            }
+            self.prev_onboarding_step = state.onboarding_step.clone();
+        }
+
+        if self
+            .celebration_start
+            .is_some_and(|started| started.elapsed() >= CELEBRATION_DURATION)
+        {
+            self.celebration_start = None;
         }
 
         // Visibility
@@ -263,38 +306,65 @@ impl AnimState {
             self.slide_y.set_target(0.0);
             self.visible = true;
         } else if state.mode == "idle" && !state.always_visible && state.onboarding_step.is_none() {
-            self.slide_y.set_target(80.0);
+            self.slide_y.set_target(SLIDE_OFFSET_Y);
         }
-        if self.slide_y.val() > 79.0 && self.slide_y.is_settled() {
+        if self.slide_y.val() > SLIDE_OFFSET_Y - 1.0 && self.slide_y.is_settled() {
             self.visible = false;
         }
 
         // -- Pill scale --
-        let base_scale = if is_expanded { 0.92 } else if state.hovering { 0.6 } else { 0.5 };
+        let base_scale = if is_expanded {
+            EXPANDED_PILL_SCALE
+        } else if state.hovering && is_minimized {
+            HOVER_PILL_SCALE
+        } else {
+            IDLE_PILL_SCALE
+        };
         let audio_bounce = if state.mode == "recording" && !state.paused {
             let lvl = state.level.min(1.0);
             1.0 + lvl.powf(1.5) * 0.12
         } else {
             1.0
         };
-        let press_scale = if state.is_pressed { 0.85 } else { 1.0 };
-        let proc_scale = if state.mode == "processing" { 0.8 } else { 1.0 };
-        self.pill_scale.set_target(base_scale * audio_bounce * press_scale * proc_scale);
+        let press_scale = if state.is_pressed { PRESS_SCALE } else { 1.0 };
+        let proc_scale = if state.mode == "processing" {
+            PROCESSING_SCALE
+        } else {
+            1.0
+        };
+        self.pill_scale
+            .set_target(base_scale * audio_bounce * press_scale * proc_scale);
 
         // -- Gradient energy --
         let energy = match state.mode.as_str() {
             "recording" => 1.0,
             "processing" => 0.6,
             _ => {
-                if state.hovering { 0.15 }
-                else if state.onboarding_step.is_some() { 0.3 }
-                else { 0.0 }
+                if state.hovering {
+                    0.15
+                } else if state.onboarding_step.is_some() {
+                    0.3
+                } else {
+                    0.0
+                }
             }
         };
-        self.gradient_energy.set_target(if (is_expanded || state.hovering) && state.gradient_enabled { energy } else { 0.0 });
+        self.gradient_energy.set_target(
+            if (is_expanded || (state.hovering && is_minimized)) && state.gradient_enabled {
+                energy
+            } else {
+                0.0
+            },
+        );
 
         // -- Hover --
-        self.hover_progress.set_target(if state.hovering && state.mode == "idle" && state.onboarding_step.is_none() { 1.0 } else { 0.0 });
+        self.hover_progress.set_target(
+            if state.hovering && state.mode == "idle" && state.onboarding_step.is_none() {
+                1.0
+            } else {
+                0.0
+            },
+        );
 
         // -- Bar heights --
         let is_processing = state.mode == "processing";
@@ -366,7 +436,9 @@ impl AnimState {
 
     /// Should the error be dismissed?
     fn should_dismiss_error(&self) -> bool {
-        self.error_timer.map(|t| t.elapsed().as_secs_f64() > 2.5).unwrap_or(false)
+        self.error_timer
+            .map(|t| t.elapsed().as_secs_f64() > 2.5)
+            .unwrap_or(false)
     }
 }
 
@@ -432,15 +504,23 @@ impl FontRenderer {
                 for row in 0..metrics.height {
                     for col in 0..metrics.width {
                         let alpha = bitmap[row * metrics.width + col];
-                        if alpha == 0 { continue; }
+                        if alpha == 0 {
+                            continue;
+                        }
                         let px = (gx + col as f32) as i32;
                         let py = (gy + row as f32) as i32;
-                        if px < 0 || py < 0 || px >= pixmap.width() as i32 || py >= pixmap.height() as i32 {
+                        if px < 0
+                            || py < 0
+                            || px >= pixmap.width() as i32
+                            || py >= pixmap.height() as i32
+                        {
                             continue;
                         }
                         let idx = (py as u32 * pixmap.width() + px as u32) as usize * 4;
                         let data = pixmap.data_mut();
-                        if idx + 3 >= data.len() { continue; }
+                        if idx + 3 >= data.len() {
+                            continue;
+                        }
                         // Alpha blend (premultiplied)
                         let sa = (alpha as u16 * color[3] as u16) / 255;
                         let sr = (color[0] as u16 * sa) / 255;
@@ -451,7 +531,7 @@ impl FontRenderer {
                         let dg = data[idx + 1] as u16;
                         let db = data[idx + 2] as u16;
                         let inv_sa = 255 - sa;
-                        data[idx]     = ((sr + dr * inv_sa / 255).min(255)) as u8;
+                        data[idx] = ((sr + dr * inv_sa / 255).min(255)) as u8;
                         data[idx + 1] = ((sg + dg * inv_sa / 255).min(255)) as u8;
                         data[idx + 2] = ((sb + db * inv_sa / 255).min(255)) as u8;
                         data[idx + 3] = ((sa + da * inv_sa / 255).min(255)) as u8;
@@ -557,11 +637,11 @@ unsafe fn run_window_loop() {
     };
     RegisterClassExW(&wc);
 
-    // Position: bottom-center of primary monitor
-    let screen_w = GetSystemMetrics(SM_CXSCREEN);
-    let screen_h = GetSystemMetrics(SM_CYSCREEN);
-    let x = (screen_w - CANVAS_W) / 2;
-    let y = screen_h - CANVAS_H;
+    // Position: bottom-center of the usable primary monitor work area so the
+    // pill clears the Windows taskbar.
+    let work_area = primary_work_area();
+    let x = work_area.left + ((work_area.right - work_area.left) - CANVAS_W) / 2;
+    let y = work_area.bottom - CANVAS_H;
 
     let hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
@@ -635,6 +715,30 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
+        WM_NCHITTEST => {
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderContext;
+            if ptr.is_null() {
+                return LRESULT(HTTRANSPARENT as isize);
+            }
+
+            let state = STATE.get().map(|s| s.lock().unwrap().clone());
+            if let Some(state) = state {
+                let ctx = &mut *ptr;
+                let mut point = POINT {
+                    x: get_x_lparam(lparam),
+                    y: get_y_lparam(lparam),
+                };
+                let _ = ScreenToClient(hwnd, &mut point);
+                if hit_test_overlay(point.x as f32, point.y as f32, &state, &ctx.anim) {
+                    return LRESULT(HTCLIENT as isize);
+                }
+            }
+            LRESULT(HTTRANSPARENT as isize)
+        }
+        WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+            position_overlay_window(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEMOVE => {
             // Track mouse leave
             let mut tme = TRACKMOUSEEVENT {
@@ -647,8 +751,9 @@ unsafe extern "system" fn wnd_proc(
 
             if let Some(state) = STATE.get() {
                 let mut s = state.lock().unwrap();
-                if !s.hovering {
-                    s.hovering = true;
+                let should_hover = s.mode == "idle" && s.onboarding_step.is_none();
+                if s.hovering != should_hover {
+                    s.hovering = should_hover;
                 }
             }
             LRESULT(0)
@@ -666,25 +771,27 @@ unsafe extern "system" fn wnd_proc(
                 // Determine what was clicked based on mouse position
                 let mouse_x = (lparam.0 & 0xFFFF) as i16 as f32;
                 let mouse_y = ((lparam.0 >> 16) & 0xFFFF) as i16 as f32;
-                let cx = CANVAS_W as f32 / 2.0;
-                let pill_y = CANVAS_H as f32 - 45.0; // pill center Y
+                let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderContext;
+                let anim = if ptr.is_null() {
+                    None
+                } else {
+                    Some(&(*ptr).anim)
+                };
+                let geom = overlay_geometry(&state, anim);
 
                 if state.hands_free && state.mode == "recording" {
                     // Check pause/stop button hits
-                    let audio_bounce = {
-                        let lvl = state.level.min(1.0);
-                        1.0 + lvl.powf(1.5) * 0.12
-                    };
-                    let pause_cx = cx - 49.0 * audio_bounce;
-                    let stop_cx = cx + 49.0 * audio_bounce;
-                    let btn_r = 17.0; // button radius + padding
+                    let pause_cx = geom.content_cx - CONTROL_BUTTON_OFFSET * geom.audio_bounce;
+                    let stop_cx = geom.content_cx + CONTROL_BUTTON_OFFSET * geom.audio_bounce;
 
-                    let pause_dist = ((mouse_x - pause_cx).powi(2) + (mouse_y - pill_y).powi(2)).sqrt();
-                    let stop_dist = ((mouse_x - stop_cx).powi(2) + (mouse_y - pill_y).powi(2)).sqrt();
+                    let pause_dist =
+                        ((mouse_x - pause_cx).powi(2) + (mouse_y - geom.pill_cy).powi(2)).sqrt();
+                    let stop_dist =
+                        ((mouse_x - stop_cx).powi(2) + (mouse_y - geom.pill_cy).powi(2)).sqrt();
 
-                    if pause_dist < btn_r {
+                    if pause_dist < CONTROL_HIT_RADIUS {
                         on_pause_callback();
-                    } else if stop_dist < btn_r {
+                    } else if stop_dist < CONTROL_HIT_RADIUS {
                         on_stop_callback();
                     }
                 } else if state.mode != "processing" {
@@ -699,6 +806,170 @@ unsafe extern "system" fn wnd_proc(
         }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
+}
+
+fn primary_work_area() -> RECT {
+    unsafe {
+        let primary_center = POINT {
+            x: GetSystemMetrics(SM_CXSCREEN) / 2,
+            y: GetSystemMetrics(SM_CYSCREEN) / 2,
+        };
+        let monitor = MonitorFromPoint(primary_center, MONITOR_DEFAULTTOPRIMARY);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if GetMonitorInfoW(monitor, &mut info).as_bool() {
+            info.rcWork
+        } else {
+            RECT {
+                left: 0,
+                top: 0,
+                right: GetSystemMetrics(SM_CXSCREEN),
+                bottom: GetSystemMetrics(SM_CYSCREEN),
+            }
+        }
+    }
+}
+
+fn position_overlay_window(hwnd: HWND) {
+    unsafe {
+        let work_area = primary_work_area();
+        let x = work_area.left + ((work_area.right - work_area.left) - CANVAS_W) / 2;
+        let y = work_area.bottom - CANVAS_H;
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            x,
+            y,
+            CANVAS_W,
+            CANVAS_H,
+            SWP_NOACTIVATE | SWP_NOSIZE,
+        );
+    }
+}
+
+fn get_x_lparam(lparam: LPARAM) -> i32 {
+    (lparam.0 & 0xFFFF) as i16 as i32
+}
+
+fn get_y_lparam(lparam: LPARAM) -> i32 {
+    ((lparam.0 >> 16) & 0xFFFF) as i16 as i32
+}
+
+struct OverlayGeometry {
+    cx: f32,
+    pill_cy: f32,
+    content_cx: f32,
+    pill_w: f32,
+    pill_h: f32,
+    pill_scale: f32,
+    shake_offset: f32,
+    audio_bounce: f32,
+}
+
+fn overlay_geometry(state: &OverlayState, anim: Option<&AnimState>) -> OverlayGeometry {
+    let cx = CANVAS_W as f32 / 2.0;
+    let slide_y = anim.map(|a| a.slide_y.val()).unwrap_or(0.0);
+    let pill_scale = anim.map(|a| a.pill_scale.val()).unwrap_or_else(|| {
+        let is_expanded = state.mode != "idle" || state.onboarding_step.is_some();
+        if is_expanded {
+            EXPANDED_PILL_SCALE
+        } else if state.hovering && state.mode == "idle" && state.onboarding_step.is_none() {
+            HOVER_PILL_SCALE
+        } else {
+            IDLE_PILL_SCALE
+        }
+    });
+    let shake_offset = anim
+        .filter(|a| a.shake_active)
+        .map(|a| {
+            let p = a.shake_progress;
+            4.0 * (p * std::f32::consts::PI * 6.0).sin() * (1.0 - p)
+        })
+        .unwrap_or(0.0);
+    let is_expanded = state.mode != "idle" || state.onboarding_step.is_some();
+    let audio_bounce = if state.mode == "recording" && !state.paused {
+        let lvl = state.level.min(1.0);
+        1.0 + lvl.powf(1.5) * 0.12
+    } else {
+        1.0
+    };
+    let content_w = pill_content_width(state, None);
+    let pill_h = if is_expanded {
+        EXPANDED_PILL_H
+    } else {
+        IDLE_PILL_H
+    } * pill_scale;
+
+    OverlayGeometry {
+        cx,
+        pill_cy: CANVAS_H as f32 - PILL_CENTER_BOTTOM_INSET + slide_y,
+        content_cx: cx + shake_offset,
+        pill_w: content_w * pill_scale,
+        pill_h,
+        pill_scale,
+        shake_offset,
+        audio_bounce,
+    }
+}
+
+fn pill_content_width(state: &OverlayState, font: Option<&FontRenderer>) -> f32 {
+    if state.hands_free && (state.mode == "recording" || state.mode == "processing") {
+        HANDS_FREE_CONTENT_W
+    } else if state.mode != "idle" || state.onboarding_step.is_some() {
+        if let Some(ref step) = state.onboarding_step {
+            if step.shows_hold_prompt() {
+                if let Some(fr) = font {
+                    let suffix = if state.onboarding_step.as_ref() == Some(&OnboardingStep::Welcome)
+                    {
+                        "to finish"
+                    } else {
+                        "to continue"
+                    };
+                    fr.measure("Hold ", 12.0)
+                        + fr.measure(&state.hotkey_label, 12.0)
+                        + 20.0
+                        + 6.0
+                        + fr.measure(suffix, 12.0)
+                        + 24.0
+                } else {
+                    STANDARD_CONTENT_W
+                }
+            } else {
+                STANDARD_CONTENT_W
+            }
+        } else {
+            STANDARD_CONTENT_W
+        }
+    } else {
+        IDLE_CONTENT_W
+    }
+}
+
+fn hit_test_overlay(x: f32, y: f32, state: &OverlayState, anim: &AnimState) -> bool {
+    if state.mode == "processing" {
+        return false;
+    }
+
+    let geom = overlay_geometry(state, Some(anim));
+
+    if state.hands_free && state.mode == "recording" {
+        let pause_cx = geom.content_cx - CONTROL_BUTTON_OFFSET * geom.audio_bounce;
+        let stop_cx = geom.content_cx + CONTROL_BUTTON_OFFSET * geom.audio_bounce;
+        let pause_dist = ((x - pause_cx).powi(2) + (y - geom.pill_cy).powi(2)).sqrt();
+        let stop_dist = ((x - stop_cx).powi(2) + (y - geom.pill_cy).powi(2)).sqrt();
+        if pause_dist < CONTROL_HIT_RADIUS || stop_dist < CONTROL_HIT_RADIUS {
+            return true;
+        }
+    }
+
+    let half_w = geom.pill_w / 2.0 + PILL_HIT_PADDING;
+    let half_h = geom.pill_h / 2.0 + PILL_HIT_PADDING;
+    x >= geom.cx - half_w
+        && x <= geom.cx + half_w
+        && y >= geom.pill_cy - half_h
+        && y <= geom.pill_cy + half_h
 }
 
 // ---------------------------------------------------------------------------
@@ -728,9 +999,9 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
         return;
     }
 
-    let cx = w as f32 / 2.0;
-    // Pill center Y with slide offset
-    let pill_cy = h as f32 - 45.0 + anim.slide_y.val();
+    let geom = overlay_geometry(&state, Some(anim));
+    let cx = geom.cx;
+    let pill_cy = geom.pill_cy;
 
     // -- Lava lamp gradient --
     if anim.gradient_energy.val() > 0.01 {
@@ -742,7 +1013,14 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     if let Some(ref step) = state.onboarding_step {
         if state.mode == "idle" || state.mode == "noSpeech" {
             if let Some(ref fr) = font {
-                render_onboarding_card(&mut pixmap, fr, step, &state.hotkey_label, cx, pill_cy - 50.0);
+                render_onboarding_card(
+                    &mut pixmap,
+                    fr,
+                    step,
+                    &state.hotkey_label,
+                    cx,
+                    pill_cy - CARD_GAP_Y,
+                );
             }
         }
     }
@@ -751,44 +1029,23 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     if state.mode == "recording" && state.elapsed >= 10.0 {
         if let Some(ref fr) = font {
             let elapsed_text = format_elapsed(state.elapsed);
-            fr.render_centered(&mut pixmap, &elapsed_text, cx, pill_cy - 40.0, 11.0, [255, 255, 255, 128]);
+            fr.render_centered(
+                &mut pixmap,
+                &elapsed_text,
+                cx,
+                pill_cy - TIMER_GAP_Y,
+                11.0,
+                [255, 255, 255, 128],
+            );
         }
     }
 
     // -- Pill background --
-    let pill_scale = anim.pill_scale.val();
+    let pill_scale = geom.pill_scale;
+    let pill_w = pill_content_width(&state, font.as_ref()) * pill_scale;
+    let pill_h = geom.pill_h;
 
-    // Compute pill content width
-    let content_w = if state.hands_free && (state.mode == "recording" || state.mode == "processing") {
-        138.0 // bars + pause + stop
-    } else if is_expanded {
-        if let Some(ref step) = state.onboarding_step {
-            if step.shows_hold_prompt() {
-                if let Some(ref fr) = font {
-                    let prompt = if state.onboarding_step.as_ref() == Some(&OnboardingStep::Welcome) {
-                        "Hold  to finish"
-                    } else {
-                        "Hold  to continue"
-                    };
-                    fr.measure(prompt, 12.0) + 50.0 // extra for keycap
-                } else { 76.0 }
-            } else { 76.0 }
-        } else { 76.0 }
-    } else { 64.0 };
-
-    let pill_w = content_w * pill_scale;
-    let pill_h = if is_expanded { 40.0 } else { 20.0 };
-    let pill_h = pill_h * pill_scale;
-
-    // Shake offset for noSpeech
-    let shake_offset = if anim.shake_active {
-        let p = anim.shake_progress;
-        4.0 * (p * std::f32::consts::PI * 6.0).sin() * (1.0 - p)
-    } else {
-        0.0
-    };
-
-    let pill_x = cx - pill_w / 2.0 + shake_offset;
+    let pill_x = cx - pill_w / 2.0 + geom.shake_offset;
     let pill_y = pill_cy - pill_h / 2.0;
     let pill_r = pill_h / 2.0;
 
@@ -798,7 +1055,13 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     let bg_alpha = if is_expanded { 0.75 } else { 0.4 };
     bg_paint.set_color(tiny_skia::Color::from_rgba(0.06, 0.06, 0.1, bg_alpha).unwrap());
     bg_paint.anti_alias = true;
-    pixmap.fill_path(&capsule, &bg_paint, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &capsule,
+        &bg_paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 
     // Pill border
     let border_alpha = if is_expanded { 0.3 } else { 0.35 };
@@ -812,13 +1075,17 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     pixmap.stroke_path(&capsule, &border_paint, &stroke, Default::default(), None);
 
     // -- Pill content --
-    let pill_content_cx = cx + shake_offset;
+    let pill_content_cx = geom.content_cx;
 
     if let Some(ref step) = state.onboarding_step {
         if step.shows_hold_prompt() && (state.mode == "idle" || state.mode == "noSpeech") {
             // "Hold [key] to continue/finish" inside pill
             if let Some(ref fr) = font {
-                let suffix = if *step == OnboardingStep::Welcome { "to finish" } else { "to continue" };
+                let suffix = if *step == OnboardingStep::Welcome {
+                    "to finish"
+                } else {
+                    "to continue"
+                };
                 let hold_w = fr.measure("Hold ", 12.0);
                 let key_w = fr.measure(&state.hotkey_label, 12.0) + 20.0; // keycap padding
                 let suffix_w = fr.measure(suffix, 12.0);
@@ -856,7 +1123,9 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
             }
         }
         "noSpeech" => {
-            if state.onboarding_step.is_none() || !state.onboarding_step.as_ref().unwrap().shows_hold_prompt() {
+            if state.onboarding_step.is_none()
+                || !state.onboarding_step.as_ref().unwrap().shows_hold_prompt()
+            {
                 render_flat_bars(&mut pixmap, pill_content_cx, pill_cy);
             }
         }
@@ -871,11 +1140,11 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
         _ => {}
     }
 
-    // -- Hover tooltip (below pill when minimized) --
+    // -- Hover tooltip (above pill when minimized, matching the macOS sidecar) --
     if anim.hover_progress.val() > 0.01 && state.mode == "idle" && state.onboarding_step.is_none() {
         if let Some(ref fr) = font {
             let alpha = (anim.hover_progress.val() * 255.0) as u8;
-            let tooltip_y = pill_cy + pill_h / 2.0 + 22.0;
+            let tooltip_y = pill_cy - pill_h / 2.0 + HOVER_TOOLTIP_OFFSET_Y;
             fr.render_centered(
                 &mut pixmap,
                 "Click to start transcribing",
@@ -902,11 +1171,14 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
 
     // Celebration orbit
     let (ox0, oy0, ox1, oy1, ox2, oy2, ox3, oy3) = if let Some(start) = anim.celebration_start {
-        let p = start.elapsed().as_secs_f64() * 4.0; // faster orbit
+        let progress =
+            (start.elapsed().as_secs_f64() / CELEBRATION_DURATION.as_secs_f64()).min(1.0);
+        let p = progress * FULL_CIRCLE * 2.0;
         let envelope = (p / 4.0).sin().max(0.0) as f32;
         let r = 150.0 * envelope;
         (
-            p.cos() as f32 * r, p.sin() as f32 * r,
+            p.cos() as f32 * r,
+            p.sin() as f32 * r,
             (p + std::f64::consts::FRAC_PI_2).cos() as f32 * r,
             (p + std::f64::consts::FRAC_PI_2).sin() as f32 * r,
             (p + std::f64::consts::PI).cos() as f32 * r,
@@ -920,42 +1192,74 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
 
     // Four gradient blobs — each is a large radial gradient circle
     struct Blob {
-        x: f32, y: f32, rx: f32, ry: f32,
-        r: f32, g: f32, b: f32, a: f32,
+        x: f32,
+        y: f32,
+        rx: f32,
+        ry: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
     }
 
     let blobs = [
-        Blob { // Purple
+        Blob {
+            // Purple
             x: cx + (t * 0.7 * speed).cos() as f32 * 80.0 + ox0,
             y: cy + 18.0 + (t * 0.5 * speed).sin() as f32 * 26.0 + oy0,
-            rx: 110.0, ry: 52.0,
-            r: 0.5, g: 0.0, b: 0.5, a: brightness,
+            rx: 110.0,
+            ry: 52.0,
+            r: 147.0 / 255.0,
+            g: 51.0 / 255.0,
+            b: 234.0 / 255.0,
+            a: brightness,
         },
-        Blob { // Blue
+        Blob {
+            // Blue
             x: cx + (t * 0.6 * speed + 1.5).sin() as f32 * 92.0 + ox1,
             y: cy + 20.0 + (t * 0.45 * speed + 1.0).cos() as f32 * 30.0 + oy1,
-            rx: 130.0, ry: 60.0,
-            r: 0.0, g: 0.0, b: 0.8, a: brightness * 0.9,
+            rx: 130.0,
+            ry: 60.0,
+            r: 59.0 / 255.0,
+            g: 130.0 / 255.0,
+            b: 246.0 / 255.0,
+            a: brightness * 0.9,
         },
-        Blob { // Cyan
+        Blob {
+            // Cyan
             x: cx + (t * 0.8 * speed + 3.0).cos() as f32 * 68.0 + ox2,
             y: cy + 22.0 + (t * 0.6 * speed + 2.0).sin() as f32 * 24.0 + oy2,
-            rx: 102.0, ry: 47.0,
-            r: 0.0, g: 0.6, b: 0.8, a: brightness * 0.85,
+            rx: 102.0,
+            ry: 47.0,
+            r: 34.0 / 255.0,
+            g: 211.0 / 255.0,
+            b: 238.0 / 255.0,
+            a: brightness * 0.85,
         },
-        Blob { // Indigo
+        Blob {
+            // Indigo
             x: cx + (t * 0.55 * speed + 4.5).sin() as f32 * 86.0 + ox3,
             y: cy + 19.0 + (t * 0.7 * speed + 3.5).cos() as f32 * 26.0 + oy3,
-            rx: 118.0, ry: 51.0,
-            r: 0.2, g: 0.0, b: 0.6, a: brightness * 0.9,
+            rx: 118.0,
+            ry: 51.0,
+            r: 99.0 / 255.0,
+            g: 102.0 / 255.0,
+            b: 241.0 / 255.0,
+            a: brightness * 0.9,
         },
     ];
 
     // Render each blob as a radial gradient ellipse
     for blob in &blobs {
         // Direct pixel compositing for soft elliptical blobs (fast enough at this scale)
-        let (bx0, by0) = ((blob.x - blob.rx * 1.5) as i32, (blob.y - blob.ry * 1.5) as i32);
-        let (bx1, by1) = ((blob.x + blob.rx * 1.5) as i32, (blob.y + blob.ry * 1.5) as i32);
+        let (bx0, by0) = (
+            (blob.x - blob.rx * 1.5) as i32,
+            (blob.y - blob.ry * 1.5) as i32,
+        );
+        let (bx1, by1) = (
+            (blob.x + blob.rx * 1.5) as i32,
+            (blob.y + blob.ry * 1.5) as i32,
+        );
         let bx0 = bx0.max(0) as u32;
         let by0 = by0.max(0) as u32;
         let bx1 = bx1.min(pixmap.width() as i32) as u32;
@@ -969,15 +1273,21 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
                 let dx = (px as f32 - blob.x) / blob.rx;
                 let dy = (py as f32 - blob.y) / blob.ry;
                 let dist_sq = dx * dx + dy * dy;
-                if dist_sq > 2.25 { continue; } // 1.5^2, beyond visible range
+                if dist_sq > 2.25 {
+                    continue;
+                } // 1.5^2, beyond visible range
 
                 // Gaussian-ish falloff
                 let falloff = (-dist_sq * 2.0).exp();
                 let alpha = (blob.a * falloff * 255.0) as u16;
-                if alpha == 0 { continue; }
+                if alpha == 0 {
+                    continue;
+                }
 
                 let idx = (py * pw + px) as usize * 4;
-                if idx + 3 >= data.len() { continue; }
+                if idx + 3 >= data.len() {
+                    continue;
+                }
 
                 let sr = (blob.r * 255.0) as u16;
                 let sg = (blob.g * 255.0) as u16;
@@ -995,7 +1305,7 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
                 let da = data[idx + 3] as u16;
 
                 let inv_a = 255 - alpha;
-                data[idx]     = ((pr as u16 + dr * inv_a / 255).min(255)) as u8;
+                data[idx] = ((pr as u16 + dr * inv_a / 255).min(255)) as u8;
                 data[idx + 1] = ((pg as u16 + dg * inv_a / 255).min(255)) as u8;
                 data[idx + 2] = ((pb as u16 + db * inv_a / 255).min(255)) as u8;
                 data[idx + 3] = ((pa as u16 + da * inv_a / 255).min(255)) as u8;
@@ -1034,7 +1344,13 @@ fn render_bars(
         let mut paint = tiny_skia::Paint::default();
         paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, opacity).unwrap());
         paint.anti_alias = true;
-        pixmap.fill_path(&bar_path, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+        pixmap.fill_path(
+            &bar_path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Default::default(),
+            None,
+        );
     }
 }
 
@@ -1085,7 +1401,13 @@ fn render_flat_bars(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
         let mut paint = tiny_skia::Paint::default();
         paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.25).unwrap());
         paint.anti_alias = true;
-        pixmap.fill_path(&bar_path, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+        pixmap.fill_path(
+            &bar_path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Default::default(),
+            None,
+        );
     }
 }
 
@@ -1102,14 +1424,23 @@ fn render_circle_button(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, r: f32
     pb.close();
     if let Some(path) = pb.finish() {
         let mut paint = tiny_skia::Paint::default();
-        paint.set_color(tiny_skia::Color::from_rgba(
-            color[0] as f32 / 255.0,
-            color[1] as f32 / 255.0,
-            color[2] as f32 / 255.0,
-            color[3] as f32 / 255.0,
-        ).unwrap());
+        paint.set_color(
+            tiny_skia::Color::from_rgba(
+                color[0] as f32 / 255.0,
+                color[1] as f32 / 255.0,
+                color[2] as f32 / 255.0,
+                color[3] as f32 / 255.0,
+            )
+            .unwrap(),
+        );
         paint.anti_alias = true;
-        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Default::default(),
+            None,
+        );
     }
 }
 
@@ -1123,8 +1454,20 @@ fn draw_pause_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
     let gap = 3.5;
     let left = rounded_rect(cx - gap / 2.0 - bar_w, cy - bar_h / 2.0, bar_w, bar_h, 1.0);
     let right = rounded_rect(cx + gap / 2.0, cy - bar_h / 2.0, bar_w, bar_h, 1.0);
-    pixmap.fill_path(&left, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
-    pixmap.fill_path(&right, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &left,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
+    pixmap.fill_path(
+        &right,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 }
 
 fn draw_play_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
@@ -1138,7 +1481,13 @@ fn draw_play_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
     pb.line_to(cx - size * 0.4, cy + size);
     pb.close();
     if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Default::default(),
+            None,
+        );
     }
 }
 
@@ -1148,7 +1497,13 @@ fn draw_stop_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
     paint.anti_alias = true;
     let size = 4.5;
     let rect = rounded_rect(cx - size, cy - size, size * 2.0, size * 2.0, 1.5);
-    pixmap.fill_path(&rect, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &rect,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 }
 
 fn draw_mic_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
@@ -1158,10 +1513,19 @@ fn draw_mic_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32) {
 
     // Mic body (rounded rect)
     let mic = rounded_rect(cx - 4.0, cy - 9.0, 8.0, 13.0, 4.0);
-    pixmap.fill_path(&mic, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &mic,
+        &paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 
     // Mic arc
-    let stroke = tiny_skia::Stroke { width: 1.5, ..Default::default() };
+    let stroke = tiny_skia::Stroke {
+        width: 1.5,
+        ..Default::default()
+    };
     let mut pb = tiny_skia::PathBuilder::new();
     pb.move_to(cx - 7.0, cy);
     pb.cubic_to(cx - 7.0, cy + 6.0, cx - 4.0, cy + 9.0, cx, cy + 9.0);
@@ -1198,7 +1562,13 @@ fn render_error_content(
     pb.line_to(icon_x + s / 2.0, cy - s * 0.6);
     pb.close();
     if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, Default::default(), None);
+        pixmap.fill_path(
+            &path,
+            &paint,
+            tiny_skia::FillRule::Winding,
+            Default::default(),
+            None,
+        );
     }
 
     // Error text
@@ -1237,17 +1607,33 @@ fn render_onboarding_card(
     let mut bg_paint = tiny_skia::Paint::default();
     bg_paint.set_color(tiny_skia::Color::from_rgba(0.06, 0.06, 0.1, 0.75).unwrap());
     bg_paint.anti_alias = true;
-    pixmap.fill_path(&card_path, &bg_paint, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &card_path,
+        &bg_paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 
     // Card border
     let mut border_paint = tiny_skia::Paint::default();
     border_paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.3).unwrap());
     border_paint.anti_alias = true;
-    let stroke = tiny_skia::Stroke { width: 1.0, ..Default::default() };
+    let stroke = tiny_skia::Stroke {
+        width: 1.0,
+        ..Default::default()
+    };
     pixmap.stroke_path(&card_path, &border_paint, &stroke, Default::default(), None);
 
     // Card text
-    font.render_centered(pixmap, &text, cx, cy + font_size * 0.35, font_size, [255, 255, 255, 230]);
+    font.render_centered(
+        pixmap,
+        &text,
+        cx,
+        cy + font_size * 0.35,
+        font_size,
+        [255, 255, 255, 230],
+    );
 }
 
 fn render_keycap(
@@ -1273,30 +1659,63 @@ fn render_keycap(
     let mut bg = tiny_skia::Paint::default();
     bg.set_color(tiny_skia::Color::from_rgba(0.25, 0.25, 0.25, 1.0).unwrap());
     bg.anti_alias = true;
-    pixmap.fill_path(&key_path, &bg, tiny_skia::FillRule::Winding, Default::default(), None);
+    pixmap.fill_path(
+        &key_path,
+        &bg,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
 
     // Keycap border
     let mut border = tiny_skia::Paint::default();
     border.set_color(tiny_skia::Color::from_rgba(0.45, 0.45, 0.45, 1.0).unwrap());
     border.anti_alias = true;
-    let stroke = tiny_skia::Stroke { width: 1.0, ..Default::default() };
+    let stroke = tiny_skia::Stroke {
+        width: 1.0,
+        ..Default::default()
+    };
     pixmap.stroke_path(&key_path, &border, &stroke, Default::default(), None);
 
     // Keycap text
-    fr.render_centered(pixmap, label, x + kw / 2.0, cy + font_size * 0.35, font_size, [255, 255, 255, 255]);
+    fr.render_centered(
+        pixmap,
+        label,
+        x + kw / 2.0,
+        cy + font_size * 0.35,
+        font_size,
+        [255, 255, 255, 255],
+    );
 }
 
 fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
     match step {
-        OnboardingStep::TryIt => format!("Hold {} and speak \u{2014} Yap transcribes it", hotkey_label),
+        OnboardingStep::TryIt => format!(
+            "Hold {} and speak \u{2014} Yap transcribes it",
+            hotkey_label
+        ),
         OnboardingStep::Nice => {
-            let msgs = ["Nice!", "Nailed it!", "Sounds good!", "Got it!", "Perfect!", "Love it!"];
+            let msgs = [
+                "Nice!",
+                "Nailed it!",
+                "Sounds good!",
+                "Got it!",
+                "Perfect!",
+                "Love it!",
+            ];
             msgs[rand::random::<u32>() as usize % msgs.len()].to_string()
         }
-        OnboardingStep::DoubleTapTip => format!("Double-tap {} for hands-free transcription", hotkey_label),
+        OnboardingStep::DoubleTapTip => {
+            format!("Double-tap {} for hands-free transcription", hotkey_label)
+        }
         OnboardingStep::ClickTip => "Click the pill for hands-free transcription".to_string(),
-        OnboardingStep::ApiTip => "Add an API key in the menu bar for better transcription".to_string(),
-        OnboardingStep::FormattingTip => "Enable formatting in Settings to clean up grammar automatically".to_string(),
+        OnboardingStep::ApiTip => {
+            "Add an API key in the menu bar for better transcription".to_string()
+        }
+        OnboardingStep::FormattingTip => {
+            "Enable formatting in Settings to clean up grammar and punctuation automatically"
+                .to_string()
+        }
         OnboardingStep::Welcome => "You're all set \u{2014} enjoy!".to_string(),
         OnboardingStep::SpeakTip => "Try speaking up".to_string(),
         OnboardingStep::HoldTip => format!("Hold {} \u{2014} don't just tap it", hotkey_label),
@@ -1352,25 +1771,30 @@ fn blit_to_layered_window(hwnd: HWND, pixmap: &tiny_skia::Pixmap, w: u32, h: u32
         };
 
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let hbm = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0)
-            .unwrap();
+        let hbm = CreateDIBSection(hdc_mem, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
         let old = SelectObject(hdc_mem, hbm);
 
         // Convert RGBA premultiplied → BGRA premultiplied
         let src = pixmap.data();
         let dst = std::slice::from_raw_parts_mut(bits as *mut u8, (w * h * 4) as usize);
         for i in (0..dst.len()).step_by(4) {
-            dst[i] = src[i + 2];     // B
+            dst[i] = src[i + 2]; // B
             dst[i + 1] = src[i + 1]; // G
-            dst[i + 2] = src[i];     // R
+            dst[i + 2] = src[i]; // R
             dst[i + 3] = src[i + 3]; // A
         }
 
         let pt_src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: w as i32, cy: h as i32 };
+        let size = SIZE {
+            cx: w as i32,
+            cy: h as i32,
+        };
         let mut rect = RECT::default();
         let _ = GetWindowRect(hwnd, &mut rect);
-        let pt_dst = POINT { x: rect.left, y: rect.top };
+        let pt_dst = POINT {
+            x: rect.left,
+            y: rect.top,
+        };
 
         let blend = BLENDFUNCTION {
             BlendOp: 0,
