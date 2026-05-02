@@ -191,8 +191,7 @@ pub fn load() -> Result<AppConfig, String> {
     let path = config_path()?;
 
     let config = if path.exists() {
-        let data = fs::read_to_string(&path)
-            .map_err(|e| format!("failed to read config: {e}"))?;
+        let data = fs::read_to_string(&path).map_err(|e| format!("failed to read config: {e}"))?;
         serde_json::from_str::<AppConfig>(&data).unwrap_or_else(|_| {
             // File exists but is malformed -- fall back to defaults.
             AppConfig::default()
@@ -225,10 +224,7 @@ pub fn save(config: &AppConfig) -> Result<(), String> {
 
 /// Get a snapshot of the current in-memory config.
 pub fn get() -> AppConfig {
-    CONFIG
-        .lock()
-        .map(|g| g.clone())
-        .unwrap_or_default()
+    CONFIG.lock().map(|g| g.clone()).unwrap_or_default()
 }
 
 /// Update a single field via a closure, persist, and return the new config.

@@ -173,7 +173,12 @@ async fn transcribe_gemini(
             .json(&body)
             .send()
             .await
-            .map_err(|e| (format!("Gemini request failed: {e}"), is_retryable_error(&e)))?;
+            .map_err(|e| {
+                (
+                    format!("Gemini request failed: {e}"),
+                    is_retryable_error(&e),
+                )
+            })?;
 
         let status = resp.status();
         let text = resp
@@ -255,7 +260,12 @@ async fn transcribe_openai(
                 .multipart(form)
                 .send()
                 .await
-                .map_err(|e| (format!("OpenAI request failed: {e}"), is_retryable_error(&e)))?;
+                .map_err(|e| {
+                    (
+                        format!("OpenAI request failed: {e}"),
+                        is_retryable_error(&e),
+                    )
+                })?;
 
             let status = resp.status();
             let text = resp
@@ -315,17 +325,10 @@ async fn transcribe_deepgram(
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
     {
-        params.push(format!(
-            "{}={}",
-            boost_param,
-            urlencoding_simple(kw)
-        ));
+        params.push(format!("{}={}", boost_param, urlencoding_simple(kw)));
     }
 
-    let url = format!(
-        "https://api.deepgram.com/v1/listen?{}",
-        params.join("&")
-    );
+    let url = format!("https://api.deepgram.com/v1/listen?{}", params.join("&"));
 
     with_retry(MAX_RETRIES, || {
         let audio_data = audio_data.clone();
@@ -342,7 +345,12 @@ async fn transcribe_deepgram(
                 .body(audio_data)
                 .send()
                 .await
-                .map_err(|e| (format!("Deepgram request failed: {e}"), is_retryable_error(&e)))?;
+                .map_err(|e| {
+                    (
+                        format!("Deepgram request failed: {e}"),
+                        is_retryable_error(&e),
+                    )
+                })?;
 
             let status = resp.status();
             let text = resp

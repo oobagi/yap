@@ -101,6 +101,7 @@
   // General
   let hotkey = $state('fn');
   let capturingHotkey = $state(false);
+  let hotkeyPreview = $state('');
   let microphones = $state<string[]>([]);
   let selectedMic = $state('');
 
@@ -258,8 +259,29 @@
 
   // ── Close Window ──────────────────────────────────────────────────────
 
-  function closeWindow() {
-    getCurrentWindow().hide();
+  async function closeWindow() {
+    if (capturingHotkey) {
+      await invoke('cancel_hotkey_capture');
+    }
+    await invoke('hide_app_window', { label: 'settings' });
+  }
+
+  async function toggleHotkeyCapture() {
+    hotkeyPreview = '';
+    capturingHotkey = !capturingHotkey;
+
+    if (capturingHotkey) {
+      await invoke('start_hotkey_capture');
+    } else {
+      await invoke('cancel_hotkey_capture');
+    }
+  }
+
+  function setCapturedHotkey(value: string) {
+    hotkey = value;
+    hotkeyPreview = '';
+    capturingHotkey = false;
+    void invoke('cancel_hotkey_capture');
   }
 
   // ── Keyboard ──────────────────────────────────────────────────────────
@@ -269,15 +291,11 @@
       e.preventDefault();
       e.stopPropagation();
 
-      // Map key to supported hotkeys
-      if (e.key === 'Alt' || e.key === 'Option') {
-        hotkey = 'option';
+      if (e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+        hotkeyPreview = '';
         capturingHotkey = false;
-      } else if (e.key === 'fn' || e.key === 'F24') {
-        hotkey = 'fn';
-        capturingHotkey = false;
-      } else if (e.key === 'Escape') {
-        capturingHotkey = false;
+        void invoke('cancel_hotkey_capture');
+        return;
       }
       return;
     }
@@ -289,12 +307,43 @@
     }
   }
 
+  function onKeyUp(e: KeyboardEvent) {
+    if (!capturingHotkey) return;
+    e.preventDefault();
+    e.stopPropagation();
+  }
+
   // ── Hotkey Display ────────────────────────────────────────────────────
 
   function hotkeyDisplayLabel(key: string): string {
-    if (key === 'fn') return 'fn / Globe';
-    if (key === 'option') return 'Option';
-    return key;
+    return key
+      .split('+')
+      .filter(Boolean)
+      .map((part) => {
+        if (part === 'cmd') return 'Cmd';
+        if (part === 'ctrl') return 'Ctrl';
+        if (part === 'option') return 'Option';
+        if (part === 'shift') return 'Shift';
+        if (part === 'fn') return 'fn';
+        if (part === 'space') return 'Space';
+        if (part === 'return') return 'Return';
+        if (part === 'escape') return 'Esc';
+        if (part === 'delete') return 'Delete';
+        if (part === 'forwarddelete') return 'Forward Delete';
+        if (part === 'capslock') return 'Caps Lock';
+        if (part === 'pageup') return 'Page Up';
+        if (part === 'pagedown') return 'Page Down';
+        if (part === 'left') return 'Left';
+        if (part === 'right') return 'Right';
+        if (part === 'up') return 'Up';
+        if (part === 'down') return 'Down';
+        if (part.startsWith('keycode:')) return `Key ${part.slice('keycode:'.length)}`;
+        if (part.startsWith('vk:')) return `Key ${part.slice('vk:'.length)}`;
+        if (part.length === 1) return part.toUpperCase();
+        if (/^f\d{1,2}$/.test(part)) return part.toUpperCase();
+        return part;
+      })
+      .join('+');
   }
 
   // ── Reset Onboarding ─────────────────────────────────────────────────
@@ -337,6 +386,8 @@
   // the form always reflects the latest persisted values (the window is
   // hidden rather than destroyed when closed).
   let unlistenFocus: (() => void) | undefined;
+  let unlistenHotkeyPreview: (() => void) | undefined;
+  let unlistenHotkeyCapture: (() => void) | undefined;
 
   getCurrentWindow()
     .onFocusChanged(({ payload: focused }) => {
@@ -349,12 +400,33 @@
       unlistenFocus = fn;
     });
 
+  getCurrentWindow()
+    .listen<string>('settings:hotkey-preview', ({ payload }) => {
+      if (capturingHotkey) {
+        hotkeyPreview = payload;
+      }
+    })
+    .then((fn) => {
+      unlistenHotkeyPreview = fn;
+    });
+
+  getCurrentWindow()
+    .listen<string>('settings:hotkey-captured', ({ payload }) => {
+      setCapturedHotkey(payload);
+    })
+    .then((fn) => {
+      unlistenHotkeyCapture = fn;
+    });
+
   onDestroy(() => {
     unlistenFocus?.();
+    unlistenHotkeyPreview?.();
+    unlistenHotkeyCapture?.();
+    void invoke('cancel_hotkey_capture');
   });
 </script>
 
-<svelte:window onkeydown={onKeyDown} />
+<svelte:window onkeydown={onKeyDown} onkeyup={onKeyUp} />
 
 {#if loading}
   <div class="settings-container" style="align-items: center; justify-content: center;">
@@ -375,15 +447,15 @@
             <button
               class="hotkey-button"
               class:capturing={capturingHotkey}
-              onclick={() => { capturingHotkey = !capturingHotkey; }}
+              onclick={toggleHotkeyCapture}
             >
               {#if capturingHotkey}
-                Press a key...
+                {hotkeyPreview ? hotkeyDisplayLabel(hotkeyPreview) : 'Press shortcut...'}
               {:else}
                 {hotkeyDisplayLabel(hotkey)}
               {/if}
             </button>
-            <span class="field-description">Press fn (Globe) or Option to set your recording hotkey.</span>
+            <span class="field-description">Press the exact key or combination. Fn/Globe is captured natively.</span>
           </div>
 
           <div class="field-divider"></div>

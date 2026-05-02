@@ -32,9 +32,7 @@ pub fn paste_text(text: &str) -> Result<(), String> {
 
     // --- Step 6: Restore previous clipboard ---
     match previous {
-        Some(prev) => clipboard
-            .set_text(prev)
-            .map_err(|e| e.to_string())?,
+        Some(prev) => clipboard.set_text(prev).map_err(|e| e.to_string())?,
         None => clipboard.clear().map_err(|e| e.to_string())?,
     }
 

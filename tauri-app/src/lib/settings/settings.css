@@ -322,7 +322,7 @@
   align-items: center;
   justify-content: center;
   height: 32px;
-  min-width: 100px;
+  min-width: 168px;
   padding: 0 14px;
   background: var(--settings-input-bg);
   border: 1px solid var(--settings-input-border);

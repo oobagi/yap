@@ -2,10 +2,11 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, SubmenuBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager,
+    AppHandle, Emitter,
 };
 
 use crate::history;
+use crate::windows;
 
 /// Build and attach the system tray icon with its menu.
 ///
@@ -14,7 +15,7 @@ use crate::history;
 ///   ----
 ///   Enabled          (check item)
 ///   History >        (submenu with recent entries)
-///   Settings...
+///   Open Yap...
 ///   ----
 ///   Quit
 pub fn setup_tray(app: &AppHandle) -> Result<(), String> {
@@ -33,7 +34,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), String> {
     // History submenu
     let history_submenu = build_history_submenu(app)?;
 
-    let settings_item = MenuItemBuilder::with_id("settings", "Settings...")
+    let settings_item = MenuItemBuilder::with_id("settings", "Open Yap...")
         .build(app)
         .map_err(|e| format!("failed to create settings item: {e}"))?;
 
@@ -72,16 +73,10 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), String> {
                     let _ = app.emit("tray:toggle-enabled", ());
                 }
                 "settings" => {
-                    if let Some(window) = app.get_webview_window("settings") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    let _ = windows::show_app_window(app, "settings");
                 }
                 "show_history" => {
-                    if let Some(window) = app.get_webview_window("history") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
+                    let _ = windows::show_app_window(app, "history");
                     let _ = app.emit("tray:show-history", ());
                 }
                 "clear_history" => {
@@ -113,9 +108,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), String> {
 }
 
 /// Build the history submenu from current entries.
-fn build_history_submenu(
-    app: &AppHandle,
-) -> Result<tauri::menu::Submenu<tauri::Wry>, String> {
+fn build_history_submenu(app: &AppHandle) -> Result<tauri::menu::Submenu<tauri::Wry>, String> {
     let entries = history::load();
 
     let mut builder = SubmenuBuilder::with_id(app, "history", "History");
@@ -193,8 +186,7 @@ pub fn refresh_history_menu(app: &AppHandle) {
             let enabled_item = CheckMenuItemBuilder::with_id("toggle_enabled", "Enabled")
                 .checked(true)
                 .build(app);
-            let settings_item = MenuItemBuilder::with_id("settings", "Settings...")
-                .build(app);
+            let settings_item = MenuItemBuilder::with_id("settings", "Open Yap...").build(app);
             let quit_item = MenuItemBuilder::with_id("quit", "Quit").build(app);
 
             if let (Ok(title), Ok(enabled), Ok(settings), Ok(quit)) =

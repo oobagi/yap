@@ -34,8 +34,7 @@ mod platform {
         let path_str = audio_path
             .to_str()
             .ok_or_else(|| "invalid audio path".to_string())?;
-        let path_cstr =
-            CString::new(path_str).map_err(|e| format!("path encoding error: {e}"))?;
+        let path_cstr = CString::new(path_str).map_err(|e| format!("path encoding error: {e}"))?;
         let locale_cstr =
             CString::new(locale).map_err(|e| format!("locale encoding error: {e}"))?;
 
@@ -43,8 +42,8 @@ mod platform {
 
         unsafe {
             // -- Create autorelease pool --
-            let pool_cls = AnyClass::get(c"NSAutoreleasePool")
-                .ok_or("NSAutoreleasePool not found")?;
+            let pool_cls =
+                AnyClass::get(c"NSAutoreleasePool").ok_or("NSAutoreleasePool not found")?;
             let pool: *mut AnyObject = msg_send![pool_cls, new];
 
             // -- Create NSString helpers --
@@ -92,48 +91,41 @@ mod platform {
             // -- Build the result handler block --
             // Called by the Speech framework with partial/final results.
             // We only care about the final result (isFinal == true).
-            let block = RcBlock::new(
-                move |result: *mut AnyObject, error: *mut AnyObject| {
-                    // Error with no result → terminal failure
-                    if !error.is_null() && result.is_null() {
-                        let desc: *mut AnyObject = msg_send![error, localizedDescription];
-                        if !desc.is_null() {
-                            let cstr: *const c_char = msg_send![desc, UTF8String];
-                            if !cstr.is_null() {
-                                let err_str =
-                                    CStr::from_ptr(cstr).to_string_lossy().to_string();
-                                let _ = tx.send(Err(err_str));
-                                return;
-                            }
+            let block = RcBlock::new(move |result: *mut AnyObject, error: *mut AnyObject| {
+                // Error with no result → terminal failure
+                if !error.is_null() && result.is_null() {
+                    let desc: *mut AnyObject = msg_send![error, localizedDescription];
+                    if !desc.is_null() {
+                        let cstr: *const c_char = msg_send![desc, UTF8String];
+                        if !cstr.is_null() {
+                            let err_str = CStr::from_ptr(cstr).to_string_lossy().to_string();
+                            let _ = tx.send(Err(err_str));
+                            return;
                         }
-                        let _ = tx.send(Err("Speech recognition error".to_string()));
-                        return;
                     }
+                    let _ = tx.send(Err("Speech recognition error".to_string()));
+                    return;
+                }
 
-                    if !result.is_null() {
-                        let is_final: bool = msg_send![result, isFinal];
-                        if is_final {
-                            let transcription: *mut AnyObject =
-                                msg_send![result, bestTranscription];
-                            if !transcription.is_null() {
-                                let text: *mut AnyObject =
-                                    msg_send![transcription, formattedString];
-                                if !text.is_null() {
-                                    let cstr: *const c_char = msg_send![text, UTF8String];
-                                    if !cstr.is_null() {
-                                        let s = CStr::from_ptr(cstr)
-                                            .to_string_lossy()
-                                            .to_string();
-                                        let _ = tx.send(Ok(s));
-                                        return;
-                                    }
+                if !result.is_null() {
+                    let is_final: bool = msg_send![result, isFinal];
+                    if is_final {
+                        let transcription: *mut AnyObject = msg_send![result, bestTranscription];
+                        if !transcription.is_null() {
+                            let text: *mut AnyObject = msg_send![transcription, formattedString];
+                            if !text.is_null() {
+                                let cstr: *const c_char = msg_send![text, UTF8String];
+                                if !cstr.is_null() {
+                                    let s = CStr::from_ptr(cstr).to_string_lossy().to_string();
+                                    let _ = tx.send(Ok(s));
+                                    return;
                                 }
                             }
-                            let _ = tx.send(Ok(String::new()));
                         }
+                        let _ = tx.send(Ok(String::new()));
                     }
-                },
-            );
+                }
+            });
 
             // -- Start recognition task --
             let _task: *mut AnyObject = msg_send![
@@ -149,9 +141,7 @@ mod platform {
         // Wait for the final result with a 10-second timeout
         match rx.recv_timeout(Duration::from_secs(10)) {
             Ok(result) => result,
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                Err("Speech recognition timed out".to_string())
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => Err("Speech recognition timed out".to_string()),
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 Err("Speech recognition channel closed unexpectedly".to_string())
             }

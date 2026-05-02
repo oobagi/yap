@@ -68,7 +68,9 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
 
     let host = cpal::default_host();
     let device = resolve_input_device(&host, device_name)?;
-    let resolved_device_name = device.name().unwrap_or_else(|_| "unknown input device".to_string());
+    let resolved_device_name = device
+        .name()
+        .unwrap_or_else(|_| "unknown input device".to_string());
 
     let config = device
         .default_input_config()
@@ -142,7 +144,15 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
                 cpal::SampleFormat::F32 => device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        process_audio_callback(data, channels, sr, &writer_cb, &levels_cb, &peak_cb, &fft_buf_cb);
+                        process_audio_callback(
+                            data,
+                            channels,
+                            sr,
+                            &writer_cb,
+                            &levels_cb,
+                            &peak_cb,
+                            &fft_buf_cb,
+                        );
                     },
                     err_fn,
                     None,
@@ -151,8 +161,17 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
                         // Convert i16 to f32
-                        let f32_data: Vec<f32> = data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
-                        process_audio_callback(&f32_data, channels, sr, &writer_cb, &levels_cb, &peak_cb, &fft_buf_cb);
+                        let f32_data: Vec<f32> =
+                            data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
+                        process_audio_callback(
+                            &f32_data,
+                            channels,
+                            sr,
+                            &writer_cb,
+                            &levels_cb,
+                            &peak_cb,
+                            &fft_buf_cb,
+                        );
                     },
                     err_fn,
                     None,
@@ -165,7 +184,15 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
                             .iter()
                             .map(|&s| (s as f32 / u16::MAX as f32) * 2.0 - 1.0)
                             .collect();
-                        process_audio_callback(&f32_data, channels, sr, &writer_cb, &levels_cb, &peak_cb, &fft_buf_cb);
+                        process_audio_callback(
+                            &f32_data,
+                            channels,
+                            sr,
+                            &writer_cb,
+                            &levels_cb,
+                            &peak_cb,
+                            &fft_buf_cb,
+                        );
                     },
                     err_fn,
                     None,
@@ -330,7 +357,8 @@ fn process_audio_callback(
         if let Ok(mut guard) = writer.lock() {
             if let Some(ref mut w) = *guard {
                 for &sample in &mono_samples {
-                    let s16 = (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+                    let s16 =
+                        (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                     let _ = w.write_sample(s16);
                 }
             }
@@ -432,10 +460,7 @@ pub fn resume_recording() {
 
 /// Get the current real-time audio levels (for overlay rendering).
 pub fn get_levels() -> AudioLevels {
-    CURRENT_LEVELS
-        .lock()
-        .map(|l| l.clone())
-        .unwrap_or_default()
+    CURRENT_LEVELS.lock().map(|l| l.clone()).unwrap_or_default()
 }
 
 /// List available audio input devices by name.
@@ -495,10 +520,10 @@ fn compute_bands(samples: &[f32], sample_rate: f32) -> [f32; RAW_BAND_COUNT] {
 
     let mut bands = [0.0f32; RAW_BAND_COUNT];
     for i in 0..RAW_BAND_COUNT {
-        let freq_low = 2.0f32
-            .powf(log_min + (log_max - log_min) * i as f32 / RAW_BAND_COUNT as f32);
-        let freq_high = 2.0f32
-            .powf(log_min + (log_max - log_min) * (i + 1) as f32 / RAW_BAND_COUNT as f32);
+        let freq_low =
+            2.0f32.powf(log_min + (log_max - log_min) * i as f32 / RAW_BAND_COUNT as f32);
+        let freq_high =
+            2.0f32.powf(log_min + (log_max - log_min) * (i + 1) as f32 / RAW_BAND_COUNT as f32);
         let bin_low = (freq_low / bin_width).max(1.0) as usize;
         let bin_high = (freq_high / bin_width).min((half - 1) as f32) as usize;
 
@@ -535,16 +560,16 @@ fn compute_bands(samples: &[f32], sample_rate: f32) -> [f32; RAW_BAND_COUNT] {
 /// Outer bars blend in more of the neighboring bands so they're not starved.
 fn mirror_bands(raw: &[f32; RAW_BAND_COUNT]) -> [f32; 11] {
     [
-        raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2,  // bar 0  (leftmost)
-        raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2,  // bar 1
+        raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2, // bar 0  (leftmost)
+        raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2, // bar 1
         raw[3] * 0.6 + raw[2] * 0.25 + raw[4] * 0.15, // bar 2
-        raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1,   // bar 3
+        raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1, // bar 3
         raw[1] * 0.8 + raw[0] * 0.15 + raw[2] * 0.05, // bar 4
-        raw[0],                                          // bar 5  (center)
+        raw[0],                                     // bar 5  (center)
         raw[1] * 0.85 + raw[0] * 0.1 + raw[2] * 0.05, // bar 6
-        raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1,   // bar 7
+        raw[2] * 0.7 + raw[1] * 0.2 + raw[3] * 0.1, // bar 7
         raw[3] * 0.6 + raw[2] * 0.25 + raw[4] * 0.15, // bar 8
-        raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2,   // bar 9
-        raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2,   // bar 10 (rightmost)
+        raw[4] * 0.5 + raw[3] * 0.3 + raw[5] * 0.2, // bar 9
+        raw[5] * 0.5 + raw[4] * 0.3 + raw[3] * 0.2, // bar 10 (rightmost)
     ]
 }
