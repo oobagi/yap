@@ -9,7 +9,6 @@
 
   import './history.css';
   import { invoke } from '@tauri-apps/api/core';
-  import { getCurrentWindow } from '@tauri-apps/api/window';
 
   // ── Types ─────────────────────────────────────────────────────────────
 
@@ -135,8 +134,8 @@
 
   // ── Close Window ──────────────────────────────────────────────────────
 
-  function closeWindow() {
-    getCurrentWindow().hide();
+  async function closeWindow() {
+    await invoke('hide_app_window', { label: 'history' });
   }
 
   // ── Keyboard ──────────────────────────────────────────────────────────

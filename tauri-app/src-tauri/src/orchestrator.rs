@@ -18,10 +18,11 @@ use crate::audio::{self, AudioLevels};
 use crate::config::{self, AppConfig};
 use crate::formatting::{self, FormattingOptions, FormattingProvider};
 use crate::history;
-use crate::hotkey::{self, HotkeyModifier};
+use crate::hotkey::{self, HotkeySpec};
 use crate::paste;
 use crate::transcription::{self, TranscriptionOptions, TranscriptionProvider};
 use crate::tray;
+use crate::windows;
 
 const SHORT_TAP_TIP_GRACE: Duration =
     Duration::from_millis((hotkey::DOUBLE_TAP_WINDOW * 1000.0) as u64 + 100);
@@ -153,7 +154,10 @@ fn onboarding_text(step: &OnboardingStep, hotkey_label: &str) -> String {
         ),
         OnboardingStep::Nice => {
             let mut rng = rand::rng();
-            NICE_MESSAGES.choose(&mut rng).unwrap_or(&"Nice! \u{1f389}").to_string()
+            NICE_MESSAGES
+                .choose(&mut rng)
+                .unwrap_or(&"Nice! \u{1f389}")
+                .to_string()
         }
         OnboardingStep::DoubleTapTip => format!(
             "Double-tap <span class=\"keycap\">{}</span> for hands-free transcription",
@@ -188,6 +192,8 @@ struct OrchestratorInner {
     peak_level: f32,
     /// Timestamp when the current recording started.
     recording_start: Option<Instant>,
+    /// Elapsed recording time banked before the current pause/resume segment.
+    recording_elapsed_before_pause: Duration,
     /// Monotonic id for the active/most recent recording attempt. Used to
     /// cancel delayed feedback from a tap that became part of a double-tap.
     recording_generation: u64,
@@ -198,7 +204,6 @@ struct OrchestratorInner {
     app: AppHandle,
 
     // -- Onboarding state --
-
     /// Current onboarding step (None = onboarding complete or not started).
     onboarding_step: Option<OnboardingStep>,
     /// Whether onboarding is complete (mirrors config.onboarding_complete).
@@ -217,7 +222,7 @@ struct OrchestratorInner {
 impl OrchestratorInner {
     fn begin_press_pending(&mut self) -> u64 {
         self.state = AppState::PressPending;
-        self.recording_start = Some(Instant::now());
+        self.reset_recording_clock();
         self.peak_level = 0.0;
         self.recording_generation = self.recording_generation.wrapping_add(1);
         let generation = self.recording_generation;
@@ -227,7 +232,7 @@ impl OrchestratorInner {
 
     fn begin_recording(&mut self) -> u64 {
         self.state = AppState::Recording;
-        self.recording_start = Some(Instant::now());
+        self.reset_recording_clock();
         self.peak_level = 0.0;
         self.recording_generation = self.recording_generation.wrapping_add(1);
         let generation = self.recording_generation;
@@ -240,10 +245,33 @@ impl OrchestratorInner {
             return false;
         }
         self.state = AppState::Recording;
-        self.recording_start = Some(Instant::now());
+        self.reset_recording_clock();
         self.peak_level = 0.0;
         self.emit_state();
         true
+    }
+
+    fn reset_recording_clock(&mut self) {
+        self.recording_start = Some(Instant::now());
+        self.recording_elapsed_before_pause = Duration::ZERO;
+    }
+
+    fn pause_recording_clock(&mut self) {
+        if let Some(start) = self.recording_start.take() {
+            self.recording_elapsed_before_pause += start.elapsed();
+        }
+    }
+
+    fn resume_recording_clock(&mut self) {
+        self.recording_start = Some(Instant::now());
+    }
+
+    fn recording_elapsed(&self) -> Duration {
+        self.recording_elapsed_before_pause
+            + self
+                .recording_start
+                .map(|start| start.elapsed())
+                .unwrap_or_default()
     }
 
     /// Emit an overlay display state to every renderer without changing the
@@ -256,12 +284,15 @@ impl OrchestratorInner {
         paused: Option<bool>,
         elapsed: Option<f64>,
     ) {
-        let _ = self.app.emit("state:change", StateChangePayload {
-            state: state_str.to_string(),
-            hands_free,
-            paused,
-            elapsed,
-        });
+        let _ = self.app.emit(
+            "state:change",
+            StateChangePayload {
+                state: state_str.to_string(),
+                hands_free,
+                paused,
+                elapsed,
+            },
+        );
 
         #[cfg(target_os = "macos")]
         crate::sidecar::send(&crate::sidecar::OutMessage::State {
@@ -301,36 +332,21 @@ impl OrchestratorInner {
 
         // Include hands-free metadata when in a recording state
         let (hands_free, paused, elapsed) = match self.state {
-            AppState::HandsFreeRecording => {
-                let elapsed = self.recording_start
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                (Some(true), Some(false), Some(elapsed))
-            }
-            AppState::HandsFreePaused => {
-                let elapsed = self.recording_start
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                (Some(true), Some(true), Some(elapsed))
-            }
-            AppState::Recording => {
-                let elapsed = self.recording_start
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                (Some(false), None, Some(elapsed))
-            }
-            AppState::PressPending => {
-                let elapsed = self.recording_start
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                (Some(false), None, Some(elapsed))
-            }
-            AppState::TapPending => {
-                let elapsed = self.recording_start
-                    .map(|s| s.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                (Some(false), None, Some(elapsed))
-            }
+            AppState::HandsFreeRecording => (
+                Some(true),
+                Some(false),
+                Some(self.recording_elapsed().as_secs_f64()),
+            ),
+            AppState::HandsFreePaused => (
+                Some(true),
+                Some(true),
+                Some(self.recording_elapsed().as_secs_f64()),
+            ),
+            AppState::Recording | AppState::PressPending | AppState::TapPending => (
+                Some(false),
+                None,
+                Some(self.recording_elapsed().as_secs_f64()),
+            ),
             _ => (None, None, None),
         };
 
@@ -340,7 +356,12 @@ impl OrchestratorInner {
 
     /// Emit an error event to the frontend.
     fn emit_error(&self, message: &str) {
-        let _ = self.app.emit("error:show", ErrorPayload { message: message.to_string() });
+        let _ = self.app.emit(
+            "error:show",
+            ErrorPayload {
+                message: message.to_string(),
+            },
+        );
         #[cfg(target_os = "macos")]
         crate::sidecar::send(&crate::sidecar::OutMessage::Error {
             message: message.to_string(),
@@ -376,16 +397,25 @@ impl OrchestratorInner {
 
     /// Emit onboarding step change to the frontend.
     fn emit_onboarding(&self) {
-        let step_str = self.onboarding_step.as_ref().map(|s| s.to_str().to_string()).unwrap_or_default();
-        let text = self.onboarding_step.as_ref()
+        let step_str = self
+            .onboarding_step
+            .as_ref()
+            .map(|s| s.to_str().to_string())
+            .unwrap_or_default();
+        let text = self
+            .onboarding_step
+            .as_ref()
             .map(|s| onboarding_text(s, &self.hotkey_label))
             .unwrap_or_default();
 
-        let _ = self.app.emit("onboarding:step", OnboardingPayload {
-            step: step_str.clone(),
-            text: text.clone(),
-            hotkey_label: self.hotkey_label.clone(),
-        });
+        let _ = self.app.emit(
+            "onboarding:step",
+            OnboardingPayload {
+                step: step_str.clone(),
+                text: text.clone(),
+                hotkey_label: self.hotkey_label.clone(),
+            },
+        );
 
         #[cfg(target_os = "macos")]
         crate::sidecar::send(&crate::sidecar::OutMessage::Onboarding {
@@ -427,17 +457,14 @@ pub struct Orchestrator {
 impl Orchestrator {
     /// Create a new orchestrator and bind it to the given `AppHandle`.
     fn new(app: AppHandle, cfg: &AppConfig) -> Self {
-        let hotkey_label = if cfg.hotkey == "option" {
-            "option".to_string()
-        } else {
-            "fn".to_string()
-        };
+        let hotkey_label = hotkey_display_label(&cfg.hotkey);
         Self {
             inner: Mutex::new(OrchestratorInner {
                 state: AppState::Idle,
                 enabled: true,
                 peak_level: 0.0,
                 recording_start: None,
+                recording_elapsed_before_pause: Duration::ZERO,
                 recording_generation: 0,
                 ignore_pending_key_up: false,
                 app,
@@ -509,13 +536,17 @@ impl Orchestrator {
                     return;
                 }
                 // Confirmation steps: fn hold advances onboarding, never records
-                OnboardingStep::ApiTip | OnboardingStep::FormattingTip | OnboardingStep::Welcome => {
+                OnboardingStep::ApiTip
+                | OnboardingStep::FormattingTip
+                | OnboardingStep::Welcome => {
                     log::info(&format!("Hold-to-confirm for: {:?}", eff_step));
                     inner.hold_confirm_start = Some(Instant::now());
                     // Emit a "pressed" event so the frontend can show scale-down feedback
                     let _ = inner.app.emit("onboarding:press", true);
                     #[cfg(target_os = "macos")]
-                    crate::sidecar::send(&crate::sidecar::OutMessage::OnboardingPress { pressed: true });
+                    crate::sidecar::send(&crate::sidecar::OutMessage::OnboardingPress {
+                        pressed: true,
+                    });
                     #[cfg(target_os = "windows")]
                     crate::win_overlay::update_state(|st| st.is_pressed = true);
                     let app = inner.app.clone();
@@ -634,10 +665,7 @@ impl Orchestrator {
             return;
         }
 
-        let duration = inner
-            .recording_start
-            .map(|s| s.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
+        let duration = inner.recording_elapsed().as_secs_f64();
         let peak = inner.peak_level;
         drop(inner);
 
@@ -743,12 +771,14 @@ impl Orchestrator {
         match inner.state {
             AppState::HandsFreeRecording => {
                 audio::pause_recording();
+                inner.pause_recording_clock();
                 inner.state = AppState::HandsFreePaused;
                 inner.emit_state();
                 log::info("Hands-free: paused");
             }
             AppState::HandsFreePaused => {
                 audio::resume_recording();
+                inner.resume_recording_clock();
                 inner.state = AppState::HandsFreeRecording;
                 inner.emit_state();
                 log::info("Hands-free: resumed");
@@ -856,21 +886,17 @@ impl Orchestrator {
         log::info("Settings changed -- reloading");
         let cfg = config::get();
 
-        // Restart hotkey with new modifier
+        // Restart hotkey with the configured shortcut.
         hotkey::stop();
-        let modifier = parse_hotkey_modifier(&cfg.hotkey);
+        let spec = parse_hotkey_spec(&cfg.hotkey);
         let app = self.app_handle();
         let orch = app.state::<Arc<Orchestrator>>();
-        start_hotkey_listener(Arc::clone(&orch), modifier);
+        start_hotkey_listener(Arc::clone(&orch), spec);
 
         // Update hotkey label for onboarding cards
         {
             let mut inner = self.inner.lock().unwrap();
-            inner.hotkey_label = if cfg.hotkey == "option" {
-                "option".to_string()
-            } else {
-                "fn".to_string()
-            };
+            inner.hotkey_label = hotkey_display_label(&cfg.hotkey);
             // Re-emit onboarding if active (to update keycap labels)
             if inner.onboarding_step.is_some() {
                 inner.emit_onboarding();
@@ -880,12 +906,18 @@ impl Orchestrator {
         // Push appearance settings to the overlay
         {
             let inner = self.inner.lock().unwrap();
-            let _ = inner.app.emit("gradient:toggle", serde_json::json!({
-                "enabled": cfg.gradient_enabled,
-            }));
-            let _ = inner.app.emit("overlay:visibility", serde_json::json!({
-                "visible": cfg.always_visible_pill,
-            }));
+            let _ = inner.app.emit(
+                "gradient:toggle",
+                serde_json::json!({
+                    "enabled": cfg.gradient_enabled,
+                }),
+            );
+            let _ = inner.app.emit(
+                "overlay:visibility",
+                serde_json::json!({
+                    "visible": cfg.always_visible_pill,
+                }),
+            );
             let _ = inner.app.emit("settings:changed", ());
 
             #[cfg(target_os = "macos")]
@@ -1176,10 +1208,7 @@ impl Orchestrator {
             inner.emit_error("Set up an API key in Settings");
             drop(inner);
             // Auto-open settings window
-            if let Some(win) = app.get_webview_window("settings") {
-                let _ = win.show();
-                let _ = win.set_focus();
-            }
+            let _ = windows::show_app_window(&app, "settings");
             return;
         }
 
@@ -1219,12 +1248,7 @@ impl Orchestrator {
                         } else {
                             None
                         };
-                        let _ = history::append(
-                            text.clone(),
-                            tx_provider,
-                            fmt_provider,
-                            fmt_style,
-                        );
+                        let _ = history::append(text.clone(), tx_provider, fmt_provider, fmt_style);
 
                         // Refresh tray history menu
                         let app = orch.app_handle();
@@ -1450,18 +1474,19 @@ pub(crate) fn play_sound(app: &AppHandle, name: &str) {
 // Hotkey modifier parsing
 // ---------------------------------------------------------------------------
 
-fn parse_hotkey_modifier(hotkey: &str) -> HotkeyModifier {
-    match hotkey {
-        "option" => HotkeyModifier::Option,
-        _ => HotkeyModifier::Fn,
-    }
+fn parse_hotkey_spec(hotkey: &str) -> HotkeySpec {
+    HotkeySpec::parse(hotkey)
+}
+
+fn hotkey_display_label(hotkey: &str) -> String {
+    parse_hotkey_spec(hotkey).label()
 }
 
 // ---------------------------------------------------------------------------
 // Hotkey listener setup (connects hotkey callbacks to orchestrator)
 // ---------------------------------------------------------------------------
 
-fn start_hotkey_listener(orch: Arc<Orchestrator>, modifier: HotkeyModifier) {
+fn start_hotkey_listener(orch: Arc<Orchestrator>, spec: HotkeySpec) {
     let orch_down = Arc::clone(&orch);
     let orch_up = Arc::clone(&orch);
     let orch_double = Arc::clone(&orch);
@@ -1472,7 +1497,7 @@ fn start_hotkey_listener(orch: Arc<Orchestrator>, modifier: HotkeyModifier) {
         move || orch_double.on_double_tap(),
     );
 
-    hotkey::start(modifier);
+    hotkey::start(spec);
 }
 
 // ---------------------------------------------------------------------------
@@ -1534,9 +1559,9 @@ pub fn init(app: &AppHandle) {
     let _ = tray::setup_tray(app);
 
     // Start hotkey listener
-    let modifier = parse_hotkey_modifier(&cfg.hotkey);
-    log::info(&format!("Starting hotkey: {:?}", modifier));
-    start_hotkey_listener(Arc::clone(&orch), modifier);
+    let spec = parse_hotkey_spec(&cfg.hotkey);
+    log::info(&format!("Starting hotkey: {}", spec.label()));
+    start_hotkey_listener(Arc::clone(&orch), spec);
 
     // Start audio level poller
     start_level_poller(Arc::clone(&orch));

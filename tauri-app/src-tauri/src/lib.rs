@@ -11,10 +11,11 @@ mod transcription;
 mod tray;
 #[cfg(target_os = "windows")]
 mod win_overlay;
+mod windows;
 
 use std::sync::Arc;
 
-use tauri::{Listener, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 use crate::config::AppConfig;
 use crate::history::HistoryEntry;
@@ -83,12 +84,7 @@ async fn transcribe(audio_path: String) -> Result<String, String> {
         el_language_code: cfg.el_language_code.clone(),
     };
 
-    transcription::transcribe(
-        cfg.tx_provider,
-        std::path::Path::new(&audio_path),
-        &options,
-    )
-    .await
+    transcription::transcribe(cfg.tx_provider, std::path::Path::new(&audio_path), &options).await
 }
 
 /// Format raw transcription text with the configured LLM.
@@ -132,7 +128,12 @@ fn add_history_entry(
     formatting_provider: Option<String>,
     formatting_style: Option<String>,
 ) -> Result<HistoryEntry, String> {
-    history::append(text, transcription_provider, formatting_provider, formatting_style)
+    history::append(
+        text,
+        transcription_provider,
+        formatting_provider,
+        formatting_style,
+    )
 }
 
 /// Remove a history entry by ID.
@@ -184,11 +185,31 @@ fn get_pipeline_state(orch: tauri::State<'_, Arc<Orchestrator>>) -> orchestrator
 /// Show the settings window. Used by the fallback root route.
 #[tauri::command]
 fn show_settings(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window("settings") {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    windows::show_app_window(&app, "settings")
+}
+
+/// Hide an app window without destroying it so it can be reopened from the tray.
+#[tauri::command]
+fn hide_app_window(app: tauri::AppHandle, label: String) -> Result<(), String> {
+    windows::hide_app_window(&app, &label)
+}
+
+#[tauri::command]
+fn start_hotkey_capture(app: tauri::AppHandle) {
+    let preview_app = app.clone();
+    hotkey::begin_capture(
+        move |shortcut| {
+            let _ = preview_app.emit_to("settings", "settings:hotkey-preview", shortcut);
+        },
+        move |shortcut| {
+            let _ = app.emit_to("settings", "settings:hotkey-captured", shortcut);
+        },
+    );
+}
+
+#[tauri::command]
+fn cancel_hotkey_capture() {
+    hotkey::cancel_capture();
 }
 
 // ---------------------------------------------------------------------------
@@ -203,12 +224,14 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .on_window_event(windows::handle_window_event)
         .setup(|app| {
             // Initialize the orchestrator -- this loads config, starts
             // the hotkey listener, sets up the tray, and begins the
             // audio level poller.
             let handle = app.handle().clone();
             orchestrator::init(&handle);
+            windows::hide_app_if_no_windows_visible(&handle);
 
             // Listen for tray toggle-enabled event
             let handle2 = app.handle().clone();
@@ -245,6 +268,9 @@ pub fn run() {
             toggle_enabled,
             get_pipeline_state,
             show_settings,
+            hide_app_window,
+            start_hotkey_capture,
+            cancel_hotkey_capture,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -105,8 +105,13 @@ pub fn spawn(app: &tauri::AppHandle) {
     let bin = if dev_path.exists() {
         dev_path
     } else if let Some(ref bp) = bundled_path {
-        if bp.exists() { bp.clone() } else {
-            orchestrator::log::info(&format!("Sidecar binary not found at {:?} or {:?}", dev_path, bundled_path));
+        if bp.exists() {
+            bp.clone()
+        } else {
+            orchestrator::log::info(&format!(
+                "Sidecar binary not found at {:?} or {:?}",
+                dev_path, bundled_path
+            ));
             return;
         }
     } else {
@@ -148,7 +153,9 @@ pub fn spawn(app: &tauri::AppHandle) {
                     Ok(l) => l,
                     Err(_) => break,
                 };
-                if line.is_empty() { continue; }
+                if line.is_empty() {
+                    continue;
+                }
 
                 let parsed: serde_json::Value = match serde_json::from_str(&line) {
                     Ok(v) => v,
