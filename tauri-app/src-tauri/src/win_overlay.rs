@@ -79,6 +79,7 @@ const IDLE_PILL_H: f32 = 20.0;
 const PILL_HIT_PADDING: f32 = 12.0;
 const CONTROL_BUTTON_OFFSET: f32 = 49.0;
 const CONTROL_HIT_RADIUS: f32 = 17.0;
+const GRADIENT_OFFSET_Y: f32 = 18.0;
 const GRADIENT_DITHER_ALPHA: f32 = 3.0;
 
 const POSITION_SCALE: [f32; 11] = [
@@ -242,6 +243,7 @@ struct AnimState {
     pill_scale: Spring,           // 0.5 (minimized) → 1.0 (expanded)
     pill_opacity: Spring,         // For fade in/out
     gradient_energy: Spring,      // 0.0–1.0
+    gradient_opacity: Spring,     // 0.0–1.0
     hover_progress: Spring,       // 0→1 for hover transition
     slide_y: Spring,              // Y offset for slide in/out
     stack_y: Spring,              // Active/minimized stack offset
@@ -266,6 +268,7 @@ impl AnimState {
             pill_scale: Spring::new(0.5, 180.0, 22.0),
             pill_opacity: Spring::new(1.0, 200.0, 20.0),
             gradient_energy: Spring::new(0.0, 120.0, 18.0),
+            gradient_opacity: Spring::new(0.0, 160.0, 20.0),
             hover_progress: Spring::new(0.0, 200.0, 22.0),
             slide_y: Spring::new(80.0, 150.0, 20.0), // start off-screen
             stack_y: Spring::new(MINIMIZED_STACK_OFFSET_Y, 150.0, 20.0),
@@ -386,13 +389,12 @@ impl AnimState {
                 }
             }
         };
-        self.gradient_energy.set_target(
-            if (is_expanded || (state.hovering && is_minimized)) && state.gradient_enabled {
-                energy
-            } else {
-                0.0
-            },
-        );
+        let show_gradient =
+            (is_expanded || (state.hovering && is_minimized)) && state.gradient_enabled;
+        self.gradient_energy
+            .set_target(if show_gradient { energy } else { 0.0 });
+        self.gradient_opacity
+            .set_target(if show_gradient { 1.0 } else { 0.0 });
 
         // -- Hover --
         self.hover_progress.set_target(
@@ -454,6 +456,7 @@ impl AnimState {
         self.pill_scale.tick(dt);
         self.pill_opacity.tick(dt);
         self.gradient_energy.tick(dt);
+        self.gradient_opacity.tick(dt);
         self.hover_progress.tick(dt);
         self.slide_y.tick(dt);
         self.stack_y.tick(dt);
@@ -467,6 +470,7 @@ impl AnimState {
             || state.mode == "recording"
             || !self.pill_scale.is_settled()
             || !self.gradient_energy.is_settled()
+            || !self.gradient_opacity.is_settled()
             || !self.hover_progress.is_settled()
             || !self.slide_y.is_settled()
             || !self.stack_y.is_settled()
@@ -1137,7 +1141,7 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
     let pill_cy = geom.pill_cy;
 
     // -- Lava lamp gradient --
-    if anim.gradient_energy.val() > 0.01 {
+    if anim.gradient_opacity.val() > 0.01 {
         render_gradient(&mut pixmap, anim, cx, pill_cy);
     }
 
@@ -1325,6 +1329,8 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
 
 fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy: f32) {
     let energy = anim.gradient_energy.val();
+    let opacity = anim.gradient_opacity.val().clamp(0.0, 1.0);
+    let cy = cy + GRADIENT_OFFSET_Y;
     let t = anim.start_time.elapsed().as_secs_f64();
     let speed = 0.22 + energy as f64 * 0.18;
     let brightness = 0.18 + energy * 0.28;
@@ -1438,8 +1444,8 @@ fn render_gradient(pixmap: &mut tiny_skia::Pixmap, anim: &AnimState, cx: f32, cy
                 } // 1.9^2, beyond visible range
 
                 let falloff = (-dist_sq * 0.9).exp();
-                let dither = (gradient_dither(px, py) - 0.5) * GRADIENT_DITHER_ALPHA;
-                let alpha = (blob.a * falloff * 255.0 + dither).clamp(0.0, 255.0) as u16;
+                let dither = (gradient_dither(px, py) - 0.5) * GRADIENT_DITHER_ALPHA * opacity;
+                let alpha = (blob.a * opacity * falloff * 255.0 + dither).clamp(0.0, 255.0) as u16;
                 if alpha == 0 {
                     continue;
                 }
