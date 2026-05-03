@@ -27,6 +27,11 @@ use crate::windows;
 const SHORT_TAP_TIP_GRACE: Duration =
     Duration::from_millis((hotkey::DOUBLE_TAP_WINDOW * 1000.0) as u64 + 100);
 const HOLD_TO_RECORD_DELAY: Duration = Duration::from_millis(250);
+const SOUND_START_PRESS: &str = "Blow";
+const SOUND_HANDS_FREE: &str = "HandsFree";
+const SOUND_ERROR: &str = "Error";
+const SOUND_SUCCESS: &str = "Submarine";
+const SOUND_LOADING: &str = "Pop";
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -68,6 +73,24 @@ struct StateChangePayload {
 #[serde(rename_all = "camelCase")]
 struct ErrorPayload {
     message: String,
+}
+
+fn emit_levels_to_renderers(app: &AppHandle, levels: &AudioLevels) {
+    let _ = app.emit("audio:levels", levels);
+    #[cfg(target_os = "macos")]
+    crate::sidecar::send(&crate::sidecar::OutMessage::Levels {
+        level: levels.level,
+        bars: levels.bars.to_vec(),
+    });
+    #[cfg(target_os = "windows")]
+    {
+        let l = levels.level;
+        let b = levels.bars;
+        crate::win_overlay::update_state(|st| {
+            st.level = l;
+            st.bars = b;
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -376,25 +399,6 @@ impl OrchestratorInner {
         }
     }
 
-    /// Emit audio levels to the frontend.
-    fn emit_levels(&self, levels: &AudioLevels) {
-        let _ = self.app.emit("audio:levels", levels);
-        #[cfg(target_os = "macos")]
-        crate::sidecar::send(&crate::sidecar::OutMessage::Levels {
-            level: levels.level,
-            bars: levels.bars.to_vec(),
-        });
-        #[cfg(target_os = "windows")]
-        {
-            let l = levels.level;
-            let b = levels.bars;
-            crate::win_overlay::update_state(|st| {
-                st.level = l;
-                st.bars = b;
-            });
-        }
-    }
-
     /// Emit onboarding step change to the frontend.
     fn emit_onboarding(&self) {
         let step_str = self
@@ -491,6 +495,7 @@ impl Orchestrator {
     fn begin_press_to_record(&self, inner: &mut OrchestratorInner) -> u64 {
         let generation = inner.begin_press_pending();
         let app = inner.app.clone();
+        play_sound(&app, SOUND_START_PRESS);
         let orch = app.state::<Arc<Orchestrator>>();
         let orch = Arc::clone(&orch);
         std::thread::spawn(move || {
@@ -500,7 +505,6 @@ impl Orchestrator {
                 inner.activate_pending_recording(generation)
             };
             if should_start {
-                play_sound(&app, "Blow");
                 orch.start_audio_capture(generation);
             }
         });
@@ -568,7 +572,7 @@ impl Orchestrator {
                                 );
                                 #[cfg(target_os = "windows")]
                                 crate::win_overlay::update_state(|st| st.is_pressed = false);
-                                play_sound(&inner.app, "Pop");
+                                play_sound(&inner.app, SOUND_ERROR);
                                 drop(inner);
                                 // Small delay then advance
                                 std::thread::sleep(std::time::Duration::from_millis(400));
@@ -721,12 +725,16 @@ impl Orchestrator {
         match inner.state {
             AppState::Recording => {
                 // Convert current hold-to-record into hands-free
+                let app = inner.app.clone();
                 inner.state = AppState::HandsFreeRecording;
                 inner.ignore_pending_key_up = true;
                 inner.emit_state();
+                drop(inner);
+                play_sound(&app, SOUND_HANDS_FREE);
                 log::info("Converted to hands-free recording");
             }
             AppState::Idle | AppState::PressPending | AppState::TapPending => {
+                let should_play_start_sound = inner.state == AppState::Idle;
                 // Dismiss any transient tip overlay before starting
                 if on_double_tap_tip {
                     drop(inner);
@@ -742,13 +750,18 @@ impl Orchestrator {
                     drop(inner);
                 }
 
-                play_sound(&self.app_handle(), "Blow");
+                if should_play_start_sound {
+                    play_sound(&self.app_handle(), SOUND_START_PRESS);
+                }
                 match start_configured_recording() {
                     Ok(_) => {
                         let mut inner = self.inner.lock().unwrap();
+                        let app = inner.app.clone();
                         inner.state = AppState::HandsFreeRecording;
                         inner.ignore_pending_key_up = true;
                         inner.emit_state();
+                        drop(inner);
+                        play_sound(&app, SOUND_HANDS_FREE);
                         log::info("Hands-free recording started");
                     }
                     Err(e) => {
@@ -838,13 +851,15 @@ impl Orchestrator {
                 inner.begin_recording();
                 drop(inner);
 
-                play_sound(&self.app_handle(), "Blow");
                 match start_configured_recording() {
                     Ok(_) => {
                         let mut inner = self.inner.lock().unwrap();
+                        let app = inner.app.clone();
                         inner.state = AppState::HandsFreeRecording;
                         inner.ignore_pending_key_up = false;
                         inner.emit_state();
+                        drop(inner);
+                        play_sound(&app, SOUND_HANDS_FREE);
                         log::info("Pill click: hands-free recording started");
                     }
                     Err(e) => {
@@ -857,9 +872,12 @@ impl Orchestrator {
             }
             AppState::Recording => {
                 // Convert hold-to-record into hands-free
+                let app = inner.app.clone();
                 inner.state = AppState::HandsFreeRecording;
                 inner.ignore_pending_key_up = true;
                 inner.emit_state();
+                drop(inner);
+                play_sound(&app, SOUND_HANDS_FREE);
                 log::info("Pill click: converted to hands-free");
             }
             AppState::PressPending => {
@@ -959,7 +977,9 @@ impl Orchestrator {
         if levels.level > inner.peak_level {
             inner.peak_level = levels.level;
         }
-        inner.emit_levels(&levels);
+        let app = inner.app.clone();
+        drop(inner);
+        emit_levels_to_renderers(&app, &levels);
     }
 
     // -- Onboarding flow ---------------------------------------------------
@@ -1044,6 +1064,8 @@ impl Orchestrator {
         let onboarding_complete = inner.onboarding_complete;
         drop(inner);
 
+        play_sound(&app, SOUND_ERROR);
+
         // Auto-dismiss after 2.5s
         let orch = app.state::<Arc<Orchestrator>>();
         let orch = Arc::clone(&orch);
@@ -1113,7 +1135,7 @@ impl Orchestrator {
             inner.nice_context = Some(NiceContext { next_step: next });
             inner.onboarding_step = Some(OnboardingStep::Nice);
             inner.emit_onboarding();
-            play_sound(&inner.app, "Submarine");
+            play_sound(&inner.app, SOUND_SUCCESS);
 
             let app = inner.app.clone();
             drop(inner);
@@ -1188,8 +1210,6 @@ impl Orchestrator {
             inner.peak_level
         };
 
-        play_sound(&self.app_handle(), "Pop");
-
         // Silence check -- use the existing no-speech card above the pill.
         if peak < 0.15 {
             log::info(&format!("Silence detected (peak {:.3}) -- skipping", peak));
@@ -1203,6 +1223,7 @@ impl Orchestrator {
         if cfg.tx_provider != TranscriptionProvider::None && cfg.tx_api_key.is_empty() {
             log::info("No API key configured for transcription provider");
             let app = self.app_handle();
+            play_sound(&app, SOUND_ERROR);
             let mut inner = self.inner.lock().unwrap();
             inner.state = AppState::Idle;
             inner.emit_error("Set up an API key in Settings");
@@ -1213,14 +1234,15 @@ impl Orchestrator {
         }
 
         // Transition to processing
-        {
+        let app = {
             let mut inner = self.inner.lock().unwrap();
             inner.state = AppState::Processing;
             inner.emit_state();
-        }
+            inner.app.clone()
+        };
+        play_sound(&app, SOUND_LOADING);
 
         // Spawn the async transcription/formatting pipeline
-        let app = self.app_handle();
         let orch = app.state::<Arc<Orchestrator>>();
         let orch = Arc::clone(&orch);
 
@@ -1230,7 +1252,6 @@ impl Orchestrator {
                 Ok(text) => {
                     if text.is_empty() {
                         log::info("Pipeline completed without transcription text");
-                        play_sound(&orch.app_handle(), "Pop");
                         orch.show_tip(OnboardingStep::SpeakTip);
                         return;
                     }
@@ -1272,11 +1293,11 @@ impl Orchestrator {
                 }
                 Err(e) => {
                     log::info(&format!("Pipeline error: {e}"));
-                    play_sound(&orch.app_handle(), "Pop");
                     if is_no_speech_error(&e) {
                         orch.show_tip(OnboardingStep::SpeakTip);
                         return;
                     }
+                    play_sound(&orch.app_handle(), SOUND_ERROR);
                     // Set internal state to idle but show error to frontend.
                     // Frontend auto-dismisses the error back to idle after 2s.
                     let mut inner = orch.inner.lock().unwrap();

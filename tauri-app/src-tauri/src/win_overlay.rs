@@ -10,7 +10,7 @@
 //!   - Hands-free controls (pause/stop buttons)
 //!   - Onboarding cards with text rendering
 //!   - Error messages with auto-dismiss
-//!   - Hover state with mic icon + tooltip
+//!   - Hover state with tooltip
 //!   - Processing shimmer sweep
 //!   - No-speech flat bars
 //!   - Elapsed time display
@@ -646,18 +646,22 @@ fn on_pill_click_callback() {
 }
 
 fn on_pause_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle() {
-        use tauri::Manager;
-        let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-        orch.toggle_pause();
+    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
+        std::thread::spawn(move || {
+            use tauri::Manager;
+            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
+            orch.toggle_pause();
+        });
     }
 }
 
 fn on_stop_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle() {
-        use tauri::Manager;
-        let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-        orch.stop_hands_free();
+    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
+        std::thread::spawn(move || {
+            use tauri::Manager;
+            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
+            orch.stop_hands_free();
+        });
     }
 }
 
@@ -867,6 +871,11 @@ unsafe extern "system" fn wnd_proc(
 
                     let control_hit_radius = CONTROL_HIT_RADIUS * geom.content_scale.max(0.75);
                     if pause_dist < control_hit_radius {
+                        update_state(|st| {
+                            if st.hands_free && st.mode == "recording" {
+                                st.paused = !st.paused;
+                            }
+                        });
                         on_pause_callback();
                     } else if stop_dist < control_hit_radius {
                         on_stop_callback();
@@ -1292,14 +1301,7 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
                 render_flat_bars(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
             }
         }
-        "idle" => {
-            if state.onboarding_step.is_none() {
-                if state.hovering {
-                    // Mic icon
-                    draw_mic_icon(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
-                }
-            }
-        }
+        "idle" => {}
         _ => {}
     }
 
@@ -1731,63 +1733,6 @@ fn draw_stop_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, scale: f32, 
         Default::default(),
         None,
     );
-}
-
-fn draw_mic_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, scale: f32) {
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.9).unwrap());
-    paint.anti_alias = true;
-
-    // Mic body (rounded rect)
-    let mic = rounded_rect(
-        cx - 4.0 * scale,
-        cy - 9.0 * scale,
-        8.0 * scale,
-        13.0 * scale,
-        4.0 * scale,
-    );
-    pixmap.fill_path(
-        &mic,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Default::default(),
-        None,
-    );
-
-    // Mic arc
-    let stroke = tiny_skia::Stroke {
-        width: 1.5 * scale,
-        ..Default::default()
-    };
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(cx - 7.0 * scale, cy);
-    pb.cubic_to(
-        cx - 7.0 * scale,
-        cy + 6.0 * scale,
-        cx - 4.0 * scale,
-        cy + 9.0 * scale,
-        cx,
-        cy + 9.0 * scale,
-    );
-    pb.cubic_to(
-        cx + 4.0 * scale,
-        cy + 9.0 * scale,
-        cx + 7.0 * scale,
-        cy + 6.0 * scale,
-        cx + 7.0 * scale,
-        cy,
-    );
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(&path, &paint, &stroke, Default::default(), None);
-    }
-
-    // Mic stem
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(cx, cy + 9.0 * scale);
-    pb.line_to(cx, cy + 12.0 * scale);
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(&path, &paint, &stroke, Default::default(), None);
-    }
 }
 
 fn render_error_content(
