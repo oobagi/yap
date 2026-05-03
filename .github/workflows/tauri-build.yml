@@ -72,6 +72,10 @@ jobs:
         working-directory: tauri-app
         run: npm ci
 
+      - name: Clean previous bundle outputs
+        working-directory: tauri-app
+        run: node -e "require('fs').rmSync('src-tauri/target/release/bundle', { recursive: true, force: true })"
+
       - name: Build Tauri app
         working-directory: tauri-app
         run: npx tauri build
