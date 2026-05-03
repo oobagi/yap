@@ -200,20 +200,3 @@ pub fn spawn(app: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 #[allow(dead_code)]
 pub fn spawn(_app: &tauri::AppHandle) {}
-
-// ---------------------------------------------------------------------------
-// App handle storage (used by win_overlay for click callbacks)
-// ---------------------------------------------------------------------------
-
-#[cfg(target_os = "windows")]
-static APP_HANDLE: std::sync::OnceLock<tauri::AppHandle> = std::sync::OnceLock::new();
-
-#[cfg(target_os = "windows")]
-pub fn store_app_handle(app: &tauri::AppHandle) {
-    let _ = APP_HANDLE.set(app.clone());
-}
-
-#[cfg(target_os = "windows")]
-pub fn get_app_handle() -> Option<&'static tauri::AppHandle> {
-    APP_HANDLE.get()
-}

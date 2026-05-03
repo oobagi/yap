@@ -18,7 +18,7 @@
 
 #![cfg(target_os = "windows")]
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use windows::core::*;
@@ -95,7 +95,6 @@ const POSITION_SCALE: [f32; 11] = [
 #[derive(Debug, Clone, PartialEq)]
 pub enum OnboardingStep {
     TryIt,
-    Nice,
     DoubleTapTip,
     ClickTip,
     ApiTip,
@@ -107,7 +106,6 @@ impl OnboardingStep {
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "tryIt" => Some(Self::TryIt),
-            "nice" => Some(Self::Nice),
             "doubleTapTip" => Some(Self::DoubleTapTip),
             "clickTip" => Some(Self::ClickTip),
             "apiTip" => Some(Self::ApiTip),
@@ -312,9 +310,6 @@ impl AnimState {
         }
 
         if state.onboarding_step != self.prev_onboarding_step {
-            if state.onboarding_step == Some(OnboardingStep::Nice) {
-                self.celebration_start = Some(Instant::now());
-            }
             self.prev_onboarding_step = state.onboarding_step.clone();
         }
 
@@ -628,6 +623,21 @@ impl FontRenderer {
 
 static STATE: OnceLock<Arc<Mutex<OverlayState>>> = OnceLock::new();
 static HWND_CELL: OnceLock<isize> = OnceLock::new();
+static CONTROL_TX: OnceLock<mpsc::Sender<ControlCommand>> = OnceLock::new();
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HitTarget {
+    Pill,
+    Pause,
+    Stop,
+}
+
+#[derive(Clone, Copy)]
+enum ControlCommand {
+    PillClick,
+    TogglePause,
+    Stop,
+}
 
 // ---------------------------------------------------------------------------
 // Public API (called from orchestrator thread)
@@ -641,7 +651,10 @@ pub fn update_state(f: impl FnOnce(&mut OverlayState)) {
             s.hovering = false;
         }
     }
-    // Trigger re-render on the overlay thread
+    post_overlay_update();
+}
+
+fn post_overlay_update() {
     if let Some(&raw_hwnd) = HWND_CELL.get() {
         let hwnd = HWND(raw_hwnd as *mut std::ffi::c_void);
         unsafe {
@@ -651,37 +664,161 @@ pub fn update_state(f: impl FnOnce(&mut OverlayState)) {
 }
 
 fn on_pill_click_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle() {
-        use tauri::Manager;
-        let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-        orch.on_pill_click();
+    dispatch_control_command(ControlCommand::PillClick);
+}
+
+fn init_control_dispatcher(app: &tauri::AppHandle) {
+    if CONTROL_TX.get().is_some() {
+        return;
+    }
+
+    let (tx, rx) = mpsc::channel::<ControlCommand>();
+    if CONTROL_TX.set(tx).is_err() {
+        return;
+    }
+
+    let app = app.clone();
+    std::thread::Builder::new()
+        .name("yap-win-overlay-controls".into())
+        .spawn(move || {
+            use tauri::Manager;
+
+            while let Ok(command) = rx.recv() {
+                let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
+                match command {
+                    ControlCommand::PillClick => orch.on_pill_click(),
+                    ControlCommand::TogglePause => orch.toggle_pause(),
+                    ControlCommand::Stop => orch.stop_hands_free(),
+                }
+            }
+        })
+        .expect("failed to spawn overlay control thread");
+}
+
+fn dispatch_control_command(command: ControlCommand) {
+    if let Some(tx) = CONTROL_TX.get() {
+        let _ = tx.send(command);
     }
 }
 
-fn on_pause_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
-        std::thread::spawn(move || {
-            use tauri::Manager;
-            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-            orch.toggle_pause();
-        });
+fn init_mouse_hook() {
+    std::thread::Builder::new()
+        .name("yap-win-overlay-mouse-hook".into())
+        .spawn(move || unsafe {
+            let hook = SetWindowsHookExW(
+                WH_MOUSE_LL,
+                Some(low_level_mouse_proc),
+                HINSTANCE::default(),
+                0,
+            );
+
+            let hook = match hook {
+                Ok(hook) => hook,
+                Err(e) => {
+                    orchestrator::log::info(&format!("Win32 mouse hook failed: {e}"));
+                    return;
+                }
+            };
+
+            orchestrator::log::info("Win32 mouse hook installed");
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+
+            let _ = UnhookWindowsHookEx(hook);
+        })
+        .expect("failed to spawn overlay mouse hook thread");
+}
+
+unsafe extern "system" fn low_level_mouse_proc(
+    code: i32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if code >= 0 && wparam.0 as u32 == WM_MOUSEMOVE {
+        let mouse = *(lparam.0 as *const MSLLHOOKSTRUCT);
+        handle_global_mouse_move(mouse.pt);
+    } else if code >= 0 && wparam.0 as u32 == WM_LBUTTONDOWN {
+        let mouse = *(lparam.0 as *const MSLLHOOKSTRUCT);
+        if handle_global_mouse_down(mouse.pt) {
+            return LRESULT(1);
+        }
+    }
+
+    CallNextHookEx(None, code, wparam, lparam)
+}
+
+fn handle_global_mouse_down(point: POINT) -> bool {
+    match hit_target_from_current_geometry(point) {
+        Some(HitTarget::Pill) => {
+            on_pill_click_callback();
+            true
+        }
+        Some(HitTarget::Pause) => {
+            handle_hands_free_control_click(HitTarget::Pause);
+            true
+        }
+        Some(HitTarget::Stop) => {
+            handle_hands_free_control_click(HitTarget::Stop);
+            true
+        }
+        _ => false,
     }
 }
 
-fn on_stop_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
-        std::thread::spawn(move || {
-            use tauri::Manager;
-            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-            orch.stop_hands_free();
-        });
+fn handle_global_mouse_move(point: POINT) {
+    let should_hover = matches!(
+        hit_target_from_current_geometry(point),
+        Some(HitTarget::Pill)
+    ) && STATE
+        .get()
+        .map(|state| {
+            let state = state.lock().unwrap();
+            state.mode == "idle" && state.onboarding_step.is_none()
+        })
+        .unwrap_or(false);
+
+    if set_hovering(should_hover) {
+        post_overlay_update();
+    }
+}
+
+fn handle_hands_free_control_click(target: HitTarget) {
+    let mut control_command = None;
+
+    update_state(|st| {
+        if !st.hands_free || st.mode != "recording" {
+            return;
+        }
+
+        match target {
+            HitTarget::Pause => {
+                st.paused = !st.paused;
+                control_command = Some(ControlCommand::TogglePause);
+            }
+            HitTarget::Stop => {
+                st.mode = "processing".into();
+                st.hands_free = false;
+                st.paused = false;
+                control_command = Some(ControlCommand::Stop);
+            }
+            HitTarget::Pill => {}
+        }
+    });
+
+    if let Some(command) = control_command {
+        dispatch_control_command(command);
     }
 }
 
 /// Spawn the overlay window on a dedicated thread.
 pub fn spawn(app: &tauri::AppHandle) {
     let _ = STATE.set(Arc::new(Mutex::new(OverlayState::default())));
-    crate::sidecar::store_app_handle(app);
+    init_control_dispatcher(app);
+    init_mouse_hook();
 
     std::thread::Builder::new()
         .name("yap-win-overlay".into())
@@ -715,7 +852,7 @@ unsafe fn run_window_loop() {
     let y = work_area.bottom - CANVAS_H;
 
     let hwnd = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
         class_name,
         w!("Yap Overlay"),
         WS_POPUP,
@@ -778,13 +915,9 @@ unsafe extern "system" fn wnd_proc(
                         st.error = None;
                     });
                 }
-                let mut state = STATE.get().map(|s| s.lock().unwrap().clone());
-                if let Some(current) = &state {
-                    let mut force_render = msg == WM_YAP_UPDATE;
-                    if msg == WM_TIMER && current.hovering {
-                        force_render = sync_hover_from_cursor(hwnd, current, &ctx.anim);
-                        state = STATE.get().map(|s| s.lock().unwrap().clone());
-                    }
+                let state = STATE.get().map(|s| s.lock().unwrap().clone());
+                if state.is_some() {
+                    let force_render = msg == WM_YAP_UPDATE;
                     if force_render {
                         render_frame(hwnd, &mut ctx.anim, &ctx.font);
                         return LRESULT(0);
@@ -798,28 +931,10 @@ unsafe extern "system" fn wnd_proc(
             }
             LRESULT(0)
         }
-        WM_NCHITTEST => {
-            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut RenderContext;
-            if ptr.is_null() {
-                return LRESULT(HTTRANSPARENT as isize);
-            }
-
-            let state = STATE.get().map(|s| s.lock().unwrap().clone());
-            if let Some(state) = state {
-                let ctx = &mut *ptr;
-                let mut point = POINT {
-                    x: get_x_lparam(lparam),
-                    y: get_y_lparam(lparam),
-                };
-                let _ = ScreenToClient(hwnd, &mut point);
-                if hit_test_overlay(point.x as f32, point.y as f32, &state, &ctx.anim) {
-                    return LRESULT(HTCLIENT as isize);
-                }
-            }
-            LRESULT(HTTRANSPARENT as isize)
-        }
+        WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
             position_overlay_window(hwnd);
+            post_overlay_update();
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
@@ -869,11 +984,17 @@ unsafe extern "system" fn wnd_proc(
                     Some(&(*ptr).anim)
                 };
                 let geom = overlay_geometry(&state, anim);
+                if let Some(anim) = anim {
+                    if !hit_test_overlay(mouse_x, mouse_y, &state, anim) {
+                        return LRESULT(0);
+                    }
+                }
 
                 if state.hands_free && state.mode == "recording" {
                     // Check pause/stop button hits
-                    let button_offset =
-                        CONTROL_BUTTON_OFFSET * geom.content_scale * geom.hands_free_progress;
+                    let button_offset = CONTROL_BUTTON_OFFSET
+                        * geom.content_scale
+                        * hands_free_hit_progress(&state, &geom);
                     let pause_cx = geom.content_cx - button_offset;
                     let stop_cx = geom.content_cx + button_offset;
 
@@ -884,14 +1005,9 @@ unsafe extern "system" fn wnd_proc(
 
                     let control_hit_radius = CONTROL_HIT_RADIUS * geom.content_scale.max(0.75);
                     if pause_dist < control_hit_radius {
-                        update_state(|st| {
-                            if st.hands_free && st.mode == "recording" {
-                                st.paused = !st.paused;
-                            }
-                        });
-                        on_pause_callback();
+                        handle_hands_free_control_click(HitTarget::Pause);
                     } else if stop_dist < control_hit_radius {
-                        on_stop_callback();
+                        handle_hands_free_control_click(HitTarget::Stop);
                     }
                 } else if state.mode != "processing" {
                     on_pill_click_callback();
@@ -967,24 +1083,57 @@ fn set_hovering(hovering: bool) -> bool {
     false
 }
 
-fn sync_hover_from_cursor(hwnd: HWND, state: &OverlayState, anim: &AnimState) -> bool {
-    if state.mode != "idle" || state.onboarding_step.is_some() {
-        return set_hovering(false);
+fn hit_target_from_current_geometry(point: POINT) -> Option<HitTarget> {
+    let state = STATE
+        .get()
+        .and_then(|state| state.lock().ok().map(|guard| guard.clone()))?;
+    if state.mode == "processing"
+        || (state.mode == "idle" && state.onboarding_step.is_none() && !state.always_visible)
+    {
+        return None;
     }
 
+    let &raw_hwnd = HWND_CELL.get()?;
+    let hwnd = HWND(raw_hwnd as *mut std::ffi::c_void);
+    let mut rect = RECT::default();
     unsafe {
-        let mut point = POINT::default();
-        if GetCursorPos(&mut point).is_err() {
-            return set_hovering(false);
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
         }
-        let _ = ScreenToClient(hwnd, &mut point);
-        set_hovering(hit_test_overlay(
-            point.x as f32,
-            point.y as f32,
-            state,
-            anim,
-        ))
     }
+
+    let x = point.x as f32 - rect.left as f32;
+    let y = point.y as f32 - rect.top as f32;
+    let geom = overlay_geometry(&state, None);
+
+    if state.hands_free && state.mode == "recording" {
+        let button_offset =
+            CONTROL_BUTTON_OFFSET * geom.content_scale * hands_free_hit_progress(&state, &geom);
+        let pause_cx = geom.content_cx - button_offset;
+        let stop_cx = geom.content_cx + button_offset;
+        let control_hit_radius = CONTROL_HIT_RADIUS * geom.content_scale.max(0.75) + 8.0;
+
+        if distance(x, y, pause_cx, geom.pill_cy) <= control_hit_radius {
+            return Some(HitTarget::Pause);
+        }
+        if distance(x, y, stop_cx, geom.pill_cy) <= control_hit_radius {
+            return Some(HitTarget::Stop);
+        }
+
+        return None;
+    }
+
+    let half_w = geom.pill_w / 2.0 + PILL_HIT_PADDING;
+    let half_h = geom.pill_h / 2.0 + PILL_HIT_PADDING;
+    (x >= geom.content_cx - half_w
+        && x <= geom.content_cx + half_w
+        && y >= geom.pill_cy - half_h
+        && y <= geom.pill_cy + half_h)
+        .then_some(HitTarget::Pill)
+}
+
+fn distance(x: f32, y: f32, cx: f32, cy: f32) -> f32 {
+    ((x - cx).powi(2) + (y - cy).powi(2)).sqrt()
 }
 
 struct OverlayGeometry {
@@ -1070,7 +1219,7 @@ fn pill_content_width(state: &OverlayState, font: Option<&FontRenderer>) -> f32 
         HANDS_FREE_CONTENT_W
     } else if state.mode != "idle" || state.onboarding_step.is_some() {
         if let Some(ref step) = state.onboarding_step {
-            if step.shows_hold_prompt() {
+            if step.shows_hold_prompt() && (state.mode == "idle" || state.mode == "noSpeech") {
                 if let Some(fr) = font {
                     let suffix = if state.onboarding_step.as_ref() == Some(&OnboardingStep::Welcome)
                     {
@@ -1085,7 +1234,7 @@ fn pill_content_width(state: &OverlayState, font: Option<&FontRenderer>) -> f32 
                         + fr.measure(suffix, 12.0)
                         + 24.0
                 } else {
-                    STANDARD_CONTENT_W
+                    hold_prompt_fallback_width(&state.hotkey_label)
                 }
             } else {
                 STANDARD_CONTENT_W
@@ -1098,6 +1247,12 @@ fn pill_content_width(state: &OverlayState, font: Option<&FontRenderer>) -> f32 
     }
 }
 
+fn hold_prompt_fallback_width(hotkey_label: &str) -> f32 {
+    let key_w = hotkey_label.chars().count() as f32 * 7.0 + 20.0;
+    let suffix_w = 68.0;
+    28.0 + key_w + 6.0 + suffix_w + 24.0
+}
+
 fn hit_test_overlay(x: f32, y: f32, state: &OverlayState, anim: &AnimState) -> bool {
     if state.mode == "processing" {
         return false;
@@ -1106,7 +1261,8 @@ fn hit_test_overlay(x: f32, y: f32, state: &OverlayState, anim: &AnimState) -> b
     let geom = overlay_geometry(state, Some(anim));
 
     if state.hands_free && state.mode == "recording" {
-        let button_offset = CONTROL_BUTTON_OFFSET * geom.content_scale * geom.hands_free_progress;
+        let button_offset =
+            CONTROL_BUTTON_OFFSET * geom.content_scale * hands_free_hit_progress(state, &geom);
         let pause_cx = geom.content_cx - button_offset;
         let stop_cx = geom.content_cx + button_offset;
         let pause_dist = ((x - pause_cx).powi(2) + (y - geom.pill_cy).powi(2)).sqrt();
@@ -1123,6 +1279,22 @@ fn hit_test_overlay(x: f32, y: f32, state: &OverlayState, anim: &AnimState) -> b
         && x <= geom.content_cx + half_w
         && y >= geom.pill_cy - half_h
         && y <= geom.pill_cy + half_h
+}
+
+fn hands_free_hit_progress(state: &OverlayState, geom: &OverlayGeometry) -> f32 {
+    if state.hands_free && state.mode == "recording" {
+        1.0
+    } else {
+        geom.hands_free_progress
+    }
+}
+
+fn hands_free_visual_progress(state: &OverlayState, geom: &OverlayGeometry) -> f32 {
+    if state.hands_free && state.mode == "recording" {
+        1.0
+    } else {
+        geom.hands_free_progress
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1288,7 +1460,8 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
 
     match state.mode.as_str() {
         "recording" | "processing" => {
-            if state.hands_free || geom.hands_free_progress > 0.01 {
+            let controls_progress = hands_free_visual_progress(&state, &geom);
+            if state.hands_free || controls_progress > 0.01 {
                 render_hands_free_content(
                     &mut pixmap,
                     anim,
@@ -1296,7 +1469,7 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
                     pill_content_cx,
                     pill_cy,
                     pill_scale,
-                    geom.hands_free_progress,
+                    controls_progress,
                 );
             } else {
                 render_bars(&mut pixmap, anim, pill_content_cx, pill_cy, pill_scale);
@@ -1916,17 +2089,6 @@ fn render_keycap(
 fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
     match step {
         OnboardingStep::TryIt => format!("Hold {} to start recording", hotkey_label),
-        OnboardingStep::Nice => {
-            let msgs = [
-                "Nice!",
-                "Nailed it!",
-                "Sounds good!",
-                "Got it!",
-                "Perfect!",
-                "Love it!",
-            ];
-            msgs[rand::random::<u32>() as usize % msgs.len()].to_string()
-        }
         OnboardingStep::DoubleTapTip => {
             format!("Double-tap {} for hands-free recording", hotkey_label)
         }

@@ -1,4 +1,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(target_os = "windows")]
+use cpal::{BufferSize, SupportedBufferSize};
 use hound::{SampleFormat, WavSpec, WavWriter};
 use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
@@ -31,6 +33,8 @@ const RAW_BAND_COUNT: usize = 6;
 
 /// FFT size (must be power of 2).
 const FFT_SIZE: usize = 1024;
+#[cfg(target_os = "windows")]
+const LOW_LATENCY_BUFFER_FRAMES: u32 = 256;
 
 /// Shared audio levels (written by the callback thread, read by the main thread).
 static CURRENT_LEVELS: once_cell::sync::Lazy<Arc<Mutex<AudioLevels>>> =
@@ -79,10 +83,12 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
     let sample_rate = config.sample_rate().0;
     let channels = config.channels() as u32;
     let sample_format = config.sample_format();
-    let stream_config: cpal::StreamConfig = config.clone().into();
+    let mut stream_config: cpal::StreamConfig = config.clone().into();
+    configure_low_latency_input(&config, &mut stream_config);
 
     log_audio(&format!(
-        "Starting audio: device={resolved_device_name:?}, sample_rate={sample_rate}, channels={channels}, sample_format={sample_format:?}"
+        "Starting audio: device={resolved_device_name:?}, sample_rate={sample_rate}, channels={channels}, sample_format={sample_format:?}, buffer_size={:?}",
+        stream_config.buffer_size
     ));
 
     let wav_path = std::env::temp_dir().join("yap_recording.wav");
@@ -160,6 +166,9 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
                 cpal::SampleFormat::I16 => device.build_input_stream(
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                        if STOP_FLAG.load(Ordering::Relaxed) {
+                            return;
+                        }
                         // Convert i16 to f32
                         let f32_data: Vec<f32> =
                             data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
@@ -179,6 +188,9 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
                 cpal::SampleFormat::U16 => device.build_input_stream(
                     &stream_config,
                     move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                        if STOP_FLAG.load(Ordering::Relaxed) {
+                            return;
+                        }
                         // Convert u16 to f32
                         let f32_data: Vec<f32> = data
                             .iter()
@@ -229,7 +241,7 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
 
             // Keep the stream alive until stop is signaled
             while !STOP_FLAG.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
 
             // Stream is dropped here, stopping audio capture
@@ -294,6 +306,30 @@ fn resolve_input_device(
         .ok_or_else(|| "no default input device available".to_string())
 }
 
+fn configure_low_latency_input(
+    supported: &cpal::SupportedStreamConfig,
+    stream_config: &mut cpal::StreamConfig,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        match *supported.buffer_size() {
+            SupportedBufferSize::Range { min, max } => {
+                let frames = LOW_LATENCY_BUFFER_FRAMES.clamp(min, max);
+                stream_config.buffer_size = BufferSize::Fixed(frames);
+            }
+            SupportedBufferSize::Unknown => {
+                stream_config.buffer_size = BufferSize::Default;
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = supported;
+        let _ = stream_config;
+    }
+}
+
 fn cleanup_failed_start() {
     RECORDING.store(false, Ordering::SeqCst);
     PAUSED.store(false, Ordering::SeqCst);
@@ -343,6 +379,10 @@ fn process_audio_callback(
     peak: &Arc<Mutex<f32>>,
     fft_buffer: &Arc<Mutex<Vec<f32>>>,
 ) {
+    if STOP_FLAG.load(Ordering::Relaxed) {
+        return;
+    }
+
     // Convert to mono f32 samples
     let mono_samples: Vec<f32> = data
         .chunks(channels as usize)
@@ -353,10 +393,13 @@ fn process_audio_callback(
         .collect();
 
     // Write to WAV if not paused
-    if !PAUSED.load(Ordering::Relaxed) {
+    if !PAUSED.load(Ordering::Relaxed) && !STOP_FLAG.load(Ordering::Relaxed) {
         if let Ok(mut guard) = writer.lock() {
             if let Some(ref mut w) = *guard {
                 for &sample in &mono_samples {
+                    if PAUSED.load(Ordering::Relaxed) || STOP_FLAG.load(Ordering::Relaxed) {
+                        break;
+                    }
                     let s16 =
                         (sample * i16::MAX as f32).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
                     let _ = w.write_sample(s16);
@@ -367,7 +410,7 @@ fn process_audio_callback(
 
     // Compute RMS level
     let frame_count = mono_samples.len();
-    if frame_count == 0 {
+    if frame_count == 0 || STOP_FLAG.load(Ordering::Relaxed) {
         return;
     }
 
@@ -427,7 +470,7 @@ pub fn stop_recording() -> Result<PathBuf, String> {
         if !RECORDING.load(Ordering::SeqCst) {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(25));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 
     // Finalize the WAV writer

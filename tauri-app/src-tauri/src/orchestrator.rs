@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rand::prelude::IndexedRandom;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -71,15 +70,14 @@ fn emit_levels_to_renderers(levels: &AudioLevels) {
 
 /// All onboarding steps, matching the Swift app's guided flow.
 ///
-/// Flow: tryIt -> nice -> doubleTapTip -> nice -> clickTip -> nice -> apiTip
-///       -> formattingTip -> welcome -> complete
+/// Flow: tryIt -> doubleTapTip -> clickTip -> apiTip -> formattingTip
+///       -> welcome -> complete
 ///
 /// Silence and too-short holds skip quietly and return the pill to idle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OnboardingStep {
     TryIt,
-    Nice,
     DoubleTapTip,
     ClickTip,
     ApiTip,
@@ -91,7 +89,6 @@ impl OnboardingStep {
     fn to_str(&self) -> &'static str {
         match self {
             Self::TryIt => "tryIt",
-            Self::Nice => "nice",
             Self::DoubleTapTip => "doubleTapTip",
             Self::ClickTip => "clickTip",
             Self::ApiTip => "apiTip",
@@ -101,22 +98,6 @@ impl OnboardingStep {
     }
 }
 
-/// The next step to advance to after a `nice` celebration.
-/// Stored separately since `nice` itself is just a visual celebration.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NiceContext {
-    next_step: OnboardingStep,
-}
-
-static NICE_MESSAGES: &[&str] = &[
-    "Nice! \u{1f389}",
-    "Nailed it! \u{2728}",
-    "Sounds good! \u{1f44c}",
-    "Got it! \u{1f64c}",
-    "Perfect! \u{1f3af}",
-    "Love it! \u{1f4ab}",
-];
-
 /// Build the onboarding card HTML text for a given step.
 fn onboarding_text(step: &OnboardingStep, hotkey_label: &str) -> String {
     match step {
@@ -124,13 +105,6 @@ fn onboarding_text(step: &OnboardingStep, hotkey_label: &str) -> String {
             "Hold <span class=\"keycap\">{}</span> to start recording",
             hotkey_label
         ),
-        OnboardingStep::Nice => {
-            let mut rng = rand::rng();
-            NICE_MESSAGES
-                .choose(&mut rng)
-                .unwrap_or(&"Nice! \u{1f389}")
-                .to_string()
-        }
         OnboardingStep::DoubleTapTip => format!(
             "Double-tap <span class=\"keycap\">{}</span> for hands-free recording",
             hotkey_label
@@ -175,8 +149,6 @@ struct OrchestratorInner {
     onboarding_step: Option<OnboardingStep>,
     /// Whether onboarding is complete (mirrors config.onboarding_complete).
     onboarding_complete: bool,
-    /// When showing a `nice` step, the next step to advance to.
-    nice_context: Option<NiceContext>,
     /// Timestamp of a pending hold-to-confirm action (for apiTip/formattingTip/welcome).
     hold_confirm_start: Option<Instant>,
     /// The hotkey label to display in onboarding cards.
@@ -394,7 +366,6 @@ impl Orchestrator {
                 app,
                 onboarding_step: None,
                 onboarding_complete: cfg.onboarding_complete,
-                nice_context: None,
                 hold_confirm_start: None,
                 hotkey_label,
             }),
@@ -645,7 +616,6 @@ impl Orchestrator {
                 log::info("Converted to hands-free recording");
             }
             AppState::Idle | AppState::PressPending | AppState::TapPending => {
-                let should_play_start_sound = inner.state == AppState::Idle;
                 if on_double_tap_tip {
                     inner.begin_recording();
                     drop(inner);
@@ -654,9 +624,6 @@ impl Orchestrator {
                     drop(inner);
                 }
 
-                if should_play_start_sound {
-                    play_sound(&self.app_handle(), SOUND_START_PRESS);
-                }
                 match start_configured_recording() {
                     Ok(_) => {
                         let mut inner = self.inner.lock().unwrap();
@@ -688,23 +655,37 @@ impl Orchestrator {
 
     /// Toggle pause/resume in hands-free mode.
     pub fn toggle_pause(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        match inner.state {
-            AppState::HandsFreeRecording => {
-                audio::pause_recording();
-                inner.pause_recording_clock();
-                inner.state = AppState::HandsFreePaused;
-                inner.emit_state();
-                log::info("Hands-free: paused");
+        enum PauseAction {
+            Pause,
+            Resume,
+            None,
+        }
+
+        let action = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.state {
+                AppState::HandsFreeRecording => {
+                    inner.pause_recording_clock();
+                    inner.state = AppState::HandsFreePaused;
+                    inner.emit_state();
+                    log::info("Hands-free: paused");
+                    PauseAction::Pause
+                }
+                AppState::HandsFreePaused => {
+                    inner.resume_recording_clock();
+                    inner.state = AppState::HandsFreeRecording;
+                    inner.emit_state();
+                    log::info("Hands-free: resumed");
+                    PauseAction::Resume
+                }
+                _ => PauseAction::None,
             }
-            AppState::HandsFreePaused => {
-                audio::resume_recording();
-                inner.resume_recording_clock();
-                inner.state = AppState::HandsFreeRecording;
-                inner.emit_state();
-                log::info("Hands-free: resumed");
-            }
-            _ => {}
+        };
+
+        match action {
+            PauseAction::Pause => audio::pause_recording(),
+            PauseAction::Resume => audio::resume_recording(),
+            PauseAction::None => {}
         }
     }
 
@@ -719,6 +700,11 @@ impl Orchestrator {
             return;
         }
         log::info("Hands-free: stopping");
+        {
+            let mut inner = self.inner.lock().unwrap();
+            inner.state = AppState::Processing;
+            inner.emit_state();
+        }
         self.stop_and_process();
     }
 
@@ -827,6 +813,16 @@ impl Orchestrator {
         {
             let mut inner = self.inner.lock().unwrap();
             inner.hotkey_label = hotkey_display_label(&cfg.hotkey);
+            if !cfg.onboarding_complete {
+                inner.onboarding_complete = false;
+                inner.onboarding_step = Some(OnboardingStep::TryIt);
+                inner.hold_confirm_start = None;
+                inner.state = AppState::Idle;
+                inner.emit_state();
+                inner.emit_onboarding();
+            } else {
+                inner.onboarding_complete = true;
+            }
             // Re-emit onboarding if active (to update keycap labels)
             if inner.onboarding_step.is_some() {
                 inner.emit_onboarding();
@@ -897,6 +893,24 @@ impl Orchestrator {
         inner.emit_onboarding();
     }
 
+    /// Reset onboarding immediately from settings and persist the change.
+    pub fn reset_onboarding(&self) -> Result<(), String> {
+        config::update(|cfg| {
+            cfg.onboarding_complete = false;
+        })?;
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.onboarding_complete = false;
+        inner.onboarding_step = Some(OnboardingStep::TryIt);
+        inner.hold_confirm_start = None;
+        inner.state = AppState::Idle;
+        inner.emit_state();
+        inner.emit_onboarding();
+        log::info("Onboarding reset");
+
+        Ok(())
+    }
+
     /// Advance from the current onboarding step to the next.
     fn advance_onboarding_step(&self) {
         let mut inner = self.inner.lock().unwrap();
@@ -938,7 +952,6 @@ impl Orchestrator {
             let mut inner = self.inner.lock().unwrap();
             inner.onboarding_complete = true;
             inner.onboarding_step = None;
-            inner.nice_context = None;
             inner.emit_onboarding();
         }
         let _ = config::update(|cfg| {
@@ -958,8 +971,8 @@ impl Orchestrator {
         }
     }
 
-    /// After the requested onboarding recording action starts, show the
-    /// "nice" celebration and then advance to the next step.
+    /// After the requested onboarding recording action starts, advance to the
+    /// next step.
     fn complete_onboarding_recording_action(
         &self,
         expected_step: OnboardingStep,
@@ -974,26 +987,8 @@ impl Orchestrator {
             return;
         }
 
-        inner.nice_context = Some(NiceContext { next_step });
-        inner.onboarding_step = Some(OnboardingStep::Nice);
+        inner.onboarding_step = Some(next_step);
         inner.emit_onboarding();
-
-        let app = inner.app.clone();
-        drop(inner);
-
-        // After 1.5s, advance from nice to the next step.
-        let orch = app.state::<Arc<Orchestrator>>();
-        let orch = Arc::clone(&orch);
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(1500));
-            let mut inner = orch.inner.lock().unwrap();
-            if inner.onboarding_step == Some(OnboardingStep::Nice) {
-                if let Some(ctx) = inner.nice_context.take() {
-                    inner.onboarding_step = Some(ctx.next_step);
-                    inner.emit_onboarding();
-                }
-            }
-        });
     }
 
     /// Restore onboarding card after an error auto-dismisses or processing finishes.
@@ -1060,6 +1055,18 @@ impl Orchestrator {
 
         let cfg = config::get();
 
+        // Pre-flight: on-device transcription is currently macOS-only.
+        if cfg!(not(target_os = "macos")) && cfg.tx_provider == TranscriptionProvider::None {
+            log::info("On-device transcription unavailable on this platform");
+            let app = self.app_handle();
+            let mut inner = self.inner.lock().unwrap();
+            inner.state = AppState::Idle;
+            inner.emit_error("Choose an API provider in Settings");
+            drop(inner);
+            let _ = windows::show_app_window(&app, "settings");
+            return;
+        }
+
         // Pre-flight: API providers require an API key. On-device (None) doesn't.
         if cfg.tx_provider != TranscriptionProvider::None && cfg.tx_api_key.is_empty() {
             log::info("No API key configured for transcription provider");
@@ -1098,23 +1105,25 @@ impl Orchestrator {
                     }
 
                     if !text.is_empty() {
-                        // Add to history
-                        let tx_provider = format!("{:?}", cfg.tx_provider).to_lowercase();
-                        let fmt_provider = if cfg.fmt_provider != FormattingProvider::None {
-                            Some(format!("{:?}", cfg.fmt_provider).to_lowercase())
-                        } else {
-                            None
-                        };
-                        let fmt_style = if cfg.fmt_provider != FormattingProvider::None {
-                            Some(format!("{:?}", cfg.fmt_style).to_lowercase())
-                        } else {
-                            None
-                        };
-                        let _ = history::append(text.clone(), tx_provider, fmt_provider, fmt_style);
+                        if cfg.history_enabled {
+                            let tx_provider = format!("{:?}", cfg.tx_provider).to_lowercase();
+                            let fmt_provider = if cfg.fmt_provider != FormattingProvider::None {
+                                Some(format!("{:?}", cfg.fmt_provider).to_lowercase())
+                            } else {
+                                None
+                            };
+                            let fmt_style = if cfg.fmt_provider != FormattingProvider::None {
+                                Some(format!("{:?}", cfg.fmt_style).to_lowercase())
+                            } else {
+                                None
+                            };
+                            let _ =
+                                history::append(text.clone(), tx_provider, fmt_provider, fmt_style);
 
-                        // Refresh tray history menu
-                        let app = orch.app_handle();
-                        tray::refresh_history_menu(&app);
+                            // Refresh tray history menu
+                            let app = orch.app_handle();
+                            tray::refresh_history_menu(&app);
+                        }
 
                         // Paste the result
                         if let Err(e) = paste::paste_text(&text) {
