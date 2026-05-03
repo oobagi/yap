@@ -170,10 +170,8 @@ mod platform {
                 has
             }
             Err(e) => {
-                log::info(&format!("Pre-check failed: {e} — assuming speech exists"));
-                // If the pre-check itself fails, don't block the pipeline.
-                // Let the API call proceed and handle its own errors.
-                true
+                log::info(&format!("Pre-check failed: {e} -- treating as no speech"));
+                false
             }
         }
     }

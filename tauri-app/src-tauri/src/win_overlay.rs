@@ -101,8 +101,6 @@ pub enum OnboardingStep {
     ApiTip,
     FormattingTip,
     Welcome,
-    SpeakTip,
-    HoldTip,
 }
 
 impl OnboardingStep {
@@ -115,8 +113,6 @@ impl OnboardingStep {
             "apiTip" => Some(Self::ApiTip),
             "formattingTip" => Some(Self::FormattingTip),
             "welcome" => Some(Self::Welcome),
-            "speakTip" => Some(Self::SpeakTip),
-            "holdTip" => Some(Self::HoldTip),
             _ => None,
         }
     }
@@ -1173,6 +1169,15 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
         }
     }
 
+    // -- Error card (above pill, matching onboarding/transient prompt cards) --
+    if state.mode == "error" {
+        if let Some(ref msg) = state.error {
+            if let Some(ref fr) = font {
+                render_error_card(&mut pixmap, fr, msg, cx, pill_cy - CARD_GAP_Y);
+            }
+        }
+    }
+
     // -- Elapsed time (above pill, hands-free) --
     if state.mode == "recording" && state.elapsed >= 10.0 {
         if let Some(ref fr) = font {
@@ -1288,11 +1293,7 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
             }
         }
         "error" => {
-            if let Some(ref msg) = state.error {
-                if let Some(ref fr) = font {
-                    render_error_content(&mut pixmap, fr, msg, pill_content_cx, pill_cy);
-                }
-            }
+            render_flat_bars(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
         }
         "noSpeech" => {
             if state.onboarding_step.is_none()
@@ -1735,23 +1736,59 @@ fn draw_stop_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, scale: f32, 
     );
 }
 
-fn render_error_content(
+fn render_error_card(
     pixmap: &mut tiny_skia::Pixmap,
     font: &FontRenderer,
     message: &str,
     cx: f32,
     cy: f32,
 ) {
+    let font_size = 14.0;
+    let icon_w = 10.0;
+    let gap = 7.0;
+    let text_w = font.measure(message, font_size);
+    let content_w = icon_w + gap + text_w;
+    let pad_h = 16.0;
+    let pad_v = 10.0;
+    let card_w = content_w + pad_h * 2.0;
+    let card_h = font_size + pad_v * 2.0;
+    let card_r = card_h / 2.0;
+
+    let card_x = cx - card_w / 2.0;
+    let card_y = cy - card_h / 2.0;
+    let card_path = rounded_rect(card_x, card_y, card_w, card_h, card_r);
+
+    let mut bg_paint = tiny_skia::Paint::default();
+    bg_paint.set_color(tiny_skia::Color::from_rgba(0.06, 0.06, 0.1, 0.75).unwrap());
+    bg_paint.anti_alias = true;
+    pixmap.fill_path(
+        &card_path,
+        &bg_paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
+
+    let mut border_paint = tiny_skia::Paint::default();
+    border_paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.3).unwrap());
+    border_paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke {
+        width: 1.0,
+        ..Default::default()
+    };
+    pixmap.stroke_path(&card_path, &border_paint, &stroke, Default::default(), None);
+
     // Warning triangle icon (simplified)
     let mut paint = tiny_skia::Paint::default();
-    paint.set_color(tiny_skia::Color::from_rgba(0.9, 0.2, 0.2, 1.0).unwrap());
+    paint.set_color(tiny_skia::Color::from_rgba(1.0, 0.42, 0.42, 1.0).unwrap());
     paint.anti_alias = true;
-    let icon_x = cx - font.measure(message, 11.0) / 2.0 - 14.0;
+    let content_x = cx - content_w / 2.0;
+    let icon_x = content_x;
     let mut pb = tiny_skia::PathBuilder::new();
-    let s = 6.0;
-    pb.move_to(icon_x, cy + s * 0.6);
-    pb.line_to(icon_x + s, cy + s * 0.6);
-    pb.line_to(icon_x + s / 2.0, cy - s * 0.6);
+    let s = icon_w;
+    pb.move_to(icon_x, cy + s * 0.45);
+    pb.line_to(icon_x + s, cy + s * 0.45);
+    pb.line_to(icon_x + s / 2.0, cy - s * 0.55);
     pb.close();
     if let Some(path) = pb.finish() {
         pixmap.fill_path(
@@ -1767,9 +1804,9 @@ fn render_error_content(
     font.render(
         pixmap,
         message,
-        icon_x + 14.0,
-        cy + 4.0,
-        11.0,
+        content_x + icon_w + gap,
+        cy + font_size * 0.35,
+        font_size,
         [255, 255, 255, 230],
     );
 }
@@ -1910,8 +1947,6 @@ fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
                 .to_string()
         }
         OnboardingStep::Welcome => "You're all set \u{2014} enjoy!".to_string(),
-        OnboardingStep::SpeakTip => "Try speaking up".to_string(),
-        OnboardingStep::HoldTip => format!("Hold {} \u{2014} don't just tap it", hotkey_label),
     }
 }
 

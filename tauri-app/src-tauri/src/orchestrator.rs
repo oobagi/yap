@@ -30,8 +30,7 @@ const HOLD_TO_RECORD_DELAY: Duration = Duration::from_millis(250);
 const SOUND_START_PRESS: &str = "Blow";
 const SOUND_HANDS_FREE: &str = "HandsFree";
 const SOUND_ERROR: &str = "Error";
-const SOUND_SUCCESS: &str = "Submarine";
-const SOUND_LOADING: &str = "Pop";
+const SOUND_SKIP: &str = "Skip";
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -102,7 +101,7 @@ fn emit_levels_to_renderers(app: &AppHandle, levels: &AudioLevels) {
 /// Flow: tryIt -> nice -> doubleTapTip -> nice -> clickTip -> nice -> apiTip
 ///       -> formattingTip -> welcome -> complete
 ///
-/// Transient tips (speakTip, holdTip) overlay the current step temporarily.
+/// Silence and too-short holds skip quietly and return the pill to idle.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum OnboardingStep {
@@ -113,8 +112,6 @@ pub enum OnboardingStep {
     ApiTip,
     FormattingTip,
     Welcome,
-    SpeakTip,
-    HoldTip,
 }
 
 impl OnboardingStep {
@@ -127,19 +124,6 @@ impl OnboardingStep {
             Self::ApiTip => "apiTip",
             Self::FormattingTip => "formattingTip",
             Self::Welcome => "welcome",
-            Self::SpeakTip => "speakTip",
-            Self::HoldTip => "holdTip",
-        }
-    }
-
-    fn is_transient_tip(&self) -> bool {
-        matches!(self, Self::SpeakTip | Self::HoldTip)
-    }
-
-    fn overlay_mode(&self) -> &'static str {
-        match self {
-            Self::SpeakTip | Self::HoldTip => "noSpeech",
-            _ => "idle",
         }
     }
 }
@@ -195,11 +179,6 @@ fn onboarding_text(step: &OnboardingStep, hotkey_label: &str) -> String {
                 .to_string()
         }
         OnboardingStep::Welcome => "You're all set — enjoy! \u{1f389}".to_string(),
-        OnboardingStep::SpeakTip => "Try speaking up".to_string(),
-        OnboardingStep::HoldTip => format!(
-            "Hold <span class=\"keycap\">{}</span> — don't just tap it",
-            hotkey_label
-        ),
     }
 }
 
@@ -231,9 +210,6 @@ struct OrchestratorInner {
     onboarding_step: Option<OnboardingStep>,
     /// Whether onboarding is complete (mirrors config.onboarding_complete).
     onboarding_complete: bool,
-    /// The step that was active before a transient tip (speakTip/holdTip)
-    /// overwrote it. Used to restore after the tip auto-dismisses.
-    pre_tip_step: Option<OnboardingStep>,
     /// When showing a `nice` step, the next step to advance to.
     nice_context: Option<NiceContext>,
     /// Timestamp of a pending hold-to-confirm action (for apiTip/formattingTip/welcome).
@@ -440,10 +416,8 @@ impl OrchestratorInner {
     }
 
     /// The effective onboarding step for input gating.
-    /// When a transient tip is showing, returns the step that was active
-    /// before the tip, so input restrictions from the parent step apply.
     fn effective_step(&self) -> Option<&OnboardingStep> {
-        self.pre_tip_step.as_ref().or(self.onboarding_step.as_ref())
+        self.onboarding_step.as_ref()
     }
 }
 
@@ -474,7 +448,6 @@ impl Orchestrator {
                 app,
                 onboarding_step: None,
                 onboarding_complete: cfg.onboarding_complete,
-                pre_tip_step: None,
                 nice_context: None,
                 hold_confirm_start: None,
                 hotkey_label,
@@ -532,7 +505,6 @@ impl Orchestrator {
         }
 
         // -- Onboarding input gating --
-        // Use effective_step so restrictions apply even during transient tips.
         if let Some(eff_step) = inner.effective_step().cloned() {
             match eff_step {
                 // Click-only and double-tap-only: fn key fully blocked
@@ -582,15 +554,8 @@ impl Orchestrator {
                     });
                     return;
                 }
-                // .tryIt and others: dismiss any tip overlay, then record normally
+                // .tryIt and others: record normally
                 _ => {
-                    drop(inner);
-                    self.dismiss_transient_tip();
-                    // Re-acquire lock after dismiss
-                    let mut inner = self.inner.lock().unwrap();
-                    if !inner.enabled || inner.state != AppState::Idle {
-                        return;
-                    }
                     self.begin_press_to_record(&mut inner);
                     return;
                 }
@@ -644,13 +609,12 @@ impl Orchestrator {
             let orch = Arc::clone(&orch);
             std::thread::spawn(move || {
                 std::thread::sleep(SHORT_TAP_TIP_GRACE);
-                let should_show_tip = {
+                let should_skip = {
                     let inner = orch.inner.lock().unwrap();
                     inner.state == AppState::TapPending && inner.recording_generation == generation
                 };
-                if should_show_tip {
-                    log::info("Quick tap -- showing holdTip");
-                    orch.show_tip(OnboardingStep::HoldTip);
+                if should_skip {
+                    orch.skip_and_minimize("Quick tap -- skipping", true);
                 }
             });
             return;
@@ -678,10 +642,12 @@ impl Orchestrator {
             duration, peak
         ));
 
-        // Too-short tap with low peak: show holdTip
+        // Too-short tap with low peak: skip if it does not become a double-tap.
         if duration < 0.5 && peak < 0.15 {
             log::info("Too short / quiet -- waiting for possible double-tap");
-            let _ = audio::stop_recording(); // discard
+            if audio::stop_recording().is_ok() {
+                play_sound(&self.app_handle(), SOUND_SKIP);
+            }
             let (app, generation) = {
                 let mut inner = self.inner.lock().unwrap();
                 inner.state = AppState::TapPending;
@@ -693,13 +659,12 @@ impl Orchestrator {
             let orch = Arc::clone(&orch);
             std::thread::spawn(move || {
                 std::thread::sleep(SHORT_TAP_TIP_GRACE);
-                let should_show_tip = {
+                let should_skip = {
                     let inner = orch.inner.lock().unwrap();
                     inner.state == AppState::TapPending && inner.recording_generation == generation
                 };
-                if should_show_tip {
-                    log::info("Too short / quiet -- showing holdTip");
-                    orch.show_tip(OnboardingStep::HoldTip);
+                if should_skip {
+                    orch.skip_and_minimize("Too short / quiet -- skipping", false);
                 }
             });
             return;
@@ -735,14 +700,7 @@ impl Orchestrator {
             }
             AppState::Idle | AppState::PressPending | AppState::TapPending => {
                 let should_play_start_sound = inner.state == AppState::Idle;
-                // Dismiss any transient tip overlay before starting
                 if on_double_tap_tip {
-                    drop(inner);
-                    self.dismiss_transient_tip();
-                    let mut inner = self.inner.lock().unwrap();
-                    if !inner.enabled {
-                        return;
-                    }
                     inner.begin_recording();
                     drop(inner);
                 } else {
@@ -1036,7 +994,6 @@ impl Orchestrator {
             let mut inner = self.inner.lock().unwrap();
             inner.onboarding_complete = true;
             inner.onboarding_step = None;
-            inner.pre_tip_step = None;
             inner.nice_context = None;
             inner.emit_onboarding();
         }
@@ -1046,74 +1003,15 @@ impl Orchestrator {
         log::info("Onboarding finalized");
     }
 
-    /// Show a transient tip (speakTip or holdTip). These auto-dismiss after 2.5s.
-    fn show_tip(&self, tip: OnboardingStep) {
-        // Capture the current step before overwriting
+    /// Skip a recording attempt without surfacing user-facing error UI.
+    fn skip_and_minimize(&self, reason: &str, play_skip_sound: bool) {
+        log::info(reason);
         let mut inner = self.inner.lock().unwrap();
-        let pre_tip = inner.onboarding_step.clone();
-        inner.pre_tip_step = pre_tip.clone();
         inner.state = AppState::Idle;
-        inner.onboarding_step = Some(tip.clone());
         inner.emit_state();
-        if tip.overlay_mode() != "idle" {
-            inner.emit_overlay_state(tip.overlay_mode(), None, None, None);
+        if play_skip_sound {
+            play_sound(&inner.app, SOUND_SKIP);
         }
-        inner.emit_onboarding();
-
-        let app = inner.app.clone();
-        let onboarding_complete = inner.onboarding_complete;
-        drop(inner);
-
-        play_sound(&app, SOUND_ERROR);
-
-        // Auto-dismiss after 2.5s
-        let orch = app.state::<Arc<Orchestrator>>();
-        let orch = Arc::clone(&orch);
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(2500));
-            let mut inner = orch.inner.lock().unwrap();
-            // Only dismiss if we're still showing this exact tip
-            if inner.onboarding_step.as_ref() == Some(&tip) {
-                inner.pre_tip_step = None;
-                if onboarding_complete {
-                    // Post-onboarding: just clear
-                    inner.onboarding_step = None;
-                    inner.emit_state();
-                    inner.emit_onboarding();
-                } else {
-                    // During onboarding: restore to the pre-tip step
-                    let restore_to = match pre_tip.as_ref() {
-                        Some(OnboardingStep::ClickTip) => OnboardingStep::ClickTip,
-                        Some(OnboardingStep::DoubleTapTip) => OnboardingStep::DoubleTapTip,
-                        _ => OnboardingStep::TryIt,
-                    };
-                    inner.onboarding_step = Some(restore_to);
-                    inner.emit_state();
-                    inner.emit_onboarding();
-                }
-            }
-        });
-    }
-
-    /// Dismiss any currently-showing transient tip and restore the previous step.
-    fn dismiss_transient_tip(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        let is_tip = inner
-            .onboarding_step
-            .as_ref()
-            .is_some_and(OnboardingStep::is_transient_tip);
-        if !is_tip {
-            return;
-        }
-        if inner.onboarding_complete {
-            inner.onboarding_step = None;
-        } else {
-            let restore = inner.pre_tip_step.clone().unwrap_or(OnboardingStep::TryIt);
-            inner.onboarding_step = Some(restore);
-        }
-        inner.pre_tip_step = None;
-        inner.emit_state();
-        inner.emit_onboarding();
     }
 
     /// After a successful transcription+paste during onboarding, show the
@@ -1135,7 +1033,6 @@ impl Orchestrator {
             inner.nice_context = Some(NiceContext { next_step: next });
             inner.onboarding_step = Some(OnboardingStep::Nice);
             inner.emit_onboarding();
-            play_sound(&inner.app, SOUND_SUCCESS);
 
             let app = inner.app.clone();
             drop(inner);
@@ -1168,9 +1065,7 @@ impl Orchestrator {
 
         // Only restore if we're in a step that should bounce back
         let restore_to = match step.as_ref() {
-            Some(OnboardingStep::TryIt)
-            | Some(OnboardingStep::SpeakTip)
-            | Some(OnboardingStep::HoldTip) => Some(OnboardingStep::TryIt),
+            Some(OnboardingStep::TryIt) => Some(OnboardingStep::TryIt),
             Some(OnboardingStep::ClickTip) => Some(OnboardingStep::ClickTip),
             Some(OnboardingStep::DoubleTapTip) => Some(OnboardingStep::DoubleTapTip),
             _ => None,
@@ -1204,16 +1099,19 @@ impl Orchestrator {
                 return;
             }
         };
+        play_sound(&self.app_handle(), SOUND_SKIP);
 
         let peak = {
             let inner = self.inner.lock().unwrap();
             inner.peak_level
         };
 
-        // Silence check -- use the existing no-speech card above the pill.
+        // Silence check: skip quietly and minimize instead of showing no-speech UI.
         if peak < 0.15 {
-            log::info(&format!("Silence detected (peak {:.3}) -- skipping", peak));
-            self.show_tip(OnboardingStep::SpeakTip);
+            self.skip_and_minimize(
+                &format!("Silence detected (peak {:.3}) -- skipping", peak),
+                false,
+            );
             return;
         }
 
@@ -1223,7 +1121,6 @@ impl Orchestrator {
         if cfg.tx_provider != TranscriptionProvider::None && cfg.tx_api_key.is_empty() {
             log::info("No API key configured for transcription provider");
             let app = self.app_handle();
-            play_sound(&app, SOUND_ERROR);
             let mut inner = self.inner.lock().unwrap();
             inner.state = AppState::Idle;
             inner.emit_error("Set up an API key in Settings");
@@ -1240,7 +1137,6 @@ impl Orchestrator {
             inner.emit_state();
             inner.app.clone()
         };
-        play_sound(&app, SOUND_LOADING);
 
         // Spawn the async transcription/formatting pipeline
         let orch = app.state::<Arc<Orchestrator>>();
@@ -1251,8 +1147,10 @@ impl Orchestrator {
             match result {
                 Ok(text) => {
                     if text.is_empty() {
-                        log::info("Pipeline completed without transcription text");
-                        orch.show_tip(OnboardingStep::SpeakTip);
+                        orch.skip_and_minimize(
+                            "Pipeline completed without transcription text -- skipping",
+                            false,
+                        );
                         return;
                     }
 
@@ -1294,10 +1192,9 @@ impl Orchestrator {
                 Err(e) => {
                     log::info(&format!("Pipeline error: {e}"));
                     if is_no_speech_error(&e) {
-                        orch.show_tip(OnboardingStep::SpeakTip);
+                        orch.skip_and_minimize(&format!("{e} -- skipping"), false);
                         return;
                     }
-                    play_sound(&orch.app_handle(), SOUND_ERROR);
                     // Set internal state to idle but show error to frontend.
                     // Frontend auto-dismisses the error back to idle after 2s.
                     let mut inner = orch.inner.lock().unwrap();
@@ -1359,7 +1256,7 @@ async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<S
         let check_path = wav_path.clone();
         let has_speech = tokio::task::spawn_blocking(move || crate::speech::pre_check(&check_path))
             .await
-            .unwrap_or(true); // if the task panics, proceed anyway
+            .unwrap_or(false);
 
         if !has_speech {
             return Err("No speech detected".to_string());
@@ -1465,29 +1362,35 @@ pub(crate) fn play_sound(app: &AppHandle, name: &str) {
         return;
     }
 
-    // Attempt to load the sound from the app's resource directory
+    // Attempt to load the sound from the app's resource directory. During dev,
+    // newly-added sounds may not be copied there yet, so fall back to the
+    // source tree path.
     let resource_path = app
         .path()
         .resource_dir()
         .ok()
-        .map(|dir| dir.join("sounds").join(format!("{name}.wav")));
+        .map(|dir| dir.join("sounds").join(format!("{name}.wav")))
+        .filter(|path| path.exists())
+        .or_else(|| {
+            let source_path =
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("sounds/{name}.wav"));
+            source_path.exists().then_some(source_path)
+        });
 
     if let Some(path) = resource_path {
-        if path.exists() {
-            std::thread::spawn(move || {
-                if let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default() {
-                    if let Ok(file) = std::fs::File::open(&path) {
-                        let source = rodio::Decoder::new(std::io::BufReader::new(file));
-                        if let Ok(source) = source {
-                            let _ = stream_handle
-                                .play_raw(rodio::source::Source::convert_samples(source));
-                            // Keep thread alive while audio plays
-                            std::thread::sleep(std::time::Duration::from_millis(500));
-                        }
+        std::thread::spawn(move || {
+            if let Ok((_stream, stream_handle)) = rodio::OutputStream::try_default() {
+                if let Ok(file) = std::fs::File::open(&path) {
+                    let source = rodio::Decoder::new(std::io::BufReader::new(file));
+                    if let Ok(source) = source {
+                        let _ =
+                            stream_handle.play_raw(rodio::source::Source::convert_samples(source));
+                        // Keep thread alive while audio plays
+                        std::thread::sleep(std::time::Duration::from_millis(500));
                     }
                 }
-            });
-        }
+            }
+        });
     }
 }
 

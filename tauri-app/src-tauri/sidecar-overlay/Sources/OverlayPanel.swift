@@ -307,8 +307,6 @@ enum OnboardingStep: Hashable {
     case apiTip
     case formattingTip
     case welcome
-    case speakTip
-    case holdTip
 
     static func from(_ str: String) -> OnboardingStep? {
         switch str {
@@ -319,8 +317,6 @@ enum OnboardingStep: Hashable {
         case "apiTip": return .apiTip
         case "formattingTip": return .formattingTip
         case "welcome": return .welcome
-        case "speakTip": return .speakTip
-        case "holdTip": return .holdTip
         default: return nil
         }
     }
@@ -407,11 +403,16 @@ struct OverlayView: View {
                 Spacer()
 
                 VStack(spacing: 8) {
-                    // Shared prompt card for onboarding and transient tips.
+                    // Shared prompt card for onboarding.
                     if state.onboardingStep != nil,
                        state.mode == .idle || state.mode == .noSpeech {
                         PromptCardView(step: state.onboardingStep!, hotkeyLabel: state.hotkeyLabel)
                             .id(state.onboardingStep)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
+                    }
+
+                    if case .error(let message) = state.mode {
+                        ErrorCardView(message: message)
                             .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
                     }
 
@@ -566,15 +567,8 @@ struct OverlayView: View {
             case .noSpeech:
                 flatBars.transition(.opacity)
 
-            case .error(let message):
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundColor(.red).font(.system(size: 12))
-                    Text(message)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.primary).lineLimit(1)
-                }
-                .transition(.opacity)
+            case .error:
+                flatBars.transition(.opacity)
 
             case .idle:
                 if state.isOnboarding {
@@ -656,6 +650,34 @@ struct KeyCapView: View {
     }
 }
 
+struct ErrorCardView: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.red)
+            Text(message)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .fixedSize()
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 25).fill(Color.black.opacity(0.75))
+                RoundedRectangle(cornerRadius: 25).fill(.thinMaterial)
+            }
+            .shadow(color: .black.opacity(0.35), radius: 16, y: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 25).strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+        )
+    }
+}
+
 struct PromptInlineView: View {
     let step: OnboardingStep
     var hotkeyLabel: String = "fn"
@@ -716,10 +738,6 @@ struct PromptCardView: View {
             Text("Enable formatting in Settings to clean up grammar and punctuation automatically")
         case .welcome:
             Text("You're all set — enjoy! 🎉")
-        case .speakTip:
-            Text("Try speaking up")
-        case .holdTip:
-            HStack(spacing: 6) { Text("Hold"); KeyCapView(label: hotkeyLabel); Text("— don't just tap it") }
         }
     }
 }
