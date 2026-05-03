@@ -3,9 +3,8 @@
 //! macOS: SFSpeechRecognizer (Speech framework)
 //! Windows: not yet implemented (returns error)
 //!
-//! Two entry points:
+//! Entry point:
 //!   - `transcribe()` — full on-device transcription (used when provider = None)
-//!   - `pre_check()` — quick check if audio contains speech (saves API costs)
 
 use std::path::Path;
 
@@ -23,8 +22,6 @@ mod platform {
     use block2::RcBlock;
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
-
-    use crate::orchestrator::log;
 
     /// Transcribe audio using on-device SFSpeechRecognizer.
     ///
@@ -147,36 +144,6 @@ mod platform {
             }
         }
     }
-
-    /// Quick pre-check: does the audio contain speech?
-    ///
-    /// Runs on-device recognition with a short timeout. Returns `true` if
-    /// any speech was detected, `false` if silent/noise-only.
-    /// Used before expensive API calls to save costs.
-    pub fn pre_check(audio_path: &Path) -> bool {
-        log::info("Running Apple Speech pre-check");
-        match transcribe(audio_path, "en-US") {
-            Ok(text) => {
-                let has = !text.trim().is_empty();
-                log::info(&format!(
-                    "Pre-check result: {} (text: {:?})",
-                    if has { "speech detected" } else { "no speech" },
-                    if text.len() > 60 {
-                        format!("{}...", &text[..60])
-                    } else {
-                        text
-                    }
-                ));
-                has
-            }
-            Err(e) => {
-                log::info(&format!("Pre-check failed: {e} — assuming speech exists"));
-                // If the pre-check itself fails, don't block the pipeline.
-                // Let the API call proceed and handle its own errors.
-                true
-            }
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -190,11 +157,6 @@ mod platform {
     pub fn transcribe(_audio_path: &Path, _locale: &str) -> Result<String, String> {
         Err("On-device speech recognition is only available on macOS".into())
     }
-
-    pub fn pre_check(_audio_path: &Path) -> bool {
-        // Can't verify — assume speech exists so the pipeline proceeds
-        true
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,10 +166,4 @@ mod platform {
 /// Transcribe audio using on-device speech recognition.
 pub fn transcribe(audio_path: &Path, locale: &str) -> Result<String, String> {
     platform::transcribe(audio_path, locale)
-}
-
-/// Quick pre-check: does the audio file contain speech?
-/// Returns `true` if speech detected, `false` if silence/noise.
-pub fn pre_check(audio_path: &Path) -> bool {
-    platform::pre_check(audio_path)
 }

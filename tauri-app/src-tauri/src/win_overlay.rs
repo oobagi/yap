@@ -10,7 +10,7 @@
 //!   - Hands-free controls (pause/stop buttons)
 //!   - Onboarding cards with text rendering
 //!   - Error messages with auto-dismiss
-//!   - Hover state with mic icon + tooltip
+//!   - Hover state with tooltip
 //!   - Processing shimmer sweep
 //!   - No-speech flat bars
 //!   - Elapsed time display
@@ -101,8 +101,6 @@ pub enum OnboardingStep {
     ApiTip,
     FormattingTip,
     Welcome,
-    SpeakTip,
-    HoldTip,
 }
 
 impl OnboardingStep {
@@ -115,8 +113,6 @@ impl OnboardingStep {
             "apiTip" => Some(Self::ApiTip),
             "formattingTip" => Some(Self::FormattingTip),
             "welcome" => Some(Self::Welcome),
-            "speakTip" => Some(Self::SpeakTip),
-            "holdTip" => Some(Self::HoldTip),
             _ => None,
         }
     }
@@ -190,7 +186,7 @@ impl Spring {
 #[derive(Clone)]
 pub struct OverlayState {
     // Core state
-    pub mode: String, // "idle" | "recording" | "processing" | "noSpeech" | "error"
+    pub mode: String, // "idle" | "pending" | "recording" | "processing" | "noSpeech" | "error"
     pub bars: [f32; 11],
     pub level: f32,
     pub hands_free: bool,
@@ -242,6 +238,7 @@ impl Default for OverlayState {
 
 struct AnimState {
     bar_springs: [Spring; 11],
+    bar_opacity_springs: [Spring; 11],
     pill_scale: Spring,           // 0.5 (minimized) → 1.0 (expanded)
     pill_opacity: Spring,         // For fade in/out
     gradient_energy: Spring,      // 0.0–1.0
@@ -267,6 +264,7 @@ impl AnimState {
     fn new() -> Self {
         Self {
             bar_springs: std::array::from_fn(|_| Spring::new(BAR_MIN_H, 280.0, 18.0)),
+            bar_opacity_springs: std::array::from_fn(|_| Spring::new(0.25, 180.0, 24.0)),
             pill_scale: Spring::new(0.5, 180.0, 22.0),
             pill_opacity: Spring::new(1.0, 200.0, 20.0),
             gradient_energy: Spring::new(0.0, 120.0, 18.0),
@@ -379,6 +377,7 @@ impl AnimState {
 
         // -- Gradient energy --
         let energy = match state.mode.as_str() {
+            "pending" => 0.0,
             "recording" => 1.0,
             "processing" => 0.6,
             _ => {
@@ -391,8 +390,9 @@ impl AnimState {
                 }
             }
         };
-        let show_gradient =
-            (is_expanded || (state.hovering && is_minimized)) && state.gradient_enabled;
+        let show_gradient = state.mode != "pending"
+            && (is_expanded || (state.hovering && is_minimized))
+            && state.gradient_enabled;
         self.gradient_energy
             .set_target(if show_gradient { energy } else { 0.0 });
         self.gradient_opacity
@@ -432,8 +432,21 @@ impl AnimState {
                 BAR_MIN_H // flat bars for idle, paused, noSpeech
             };
 
+            let target_opacity = if is_processing {
+                let wave_center = -5.0 + wave_t as f32 * 20.0;
+                let dist = (i as f32 - wave_center).abs();
+                let wave = (-dist * dist / 6.0).exp();
+                0.35 + 0.6 * wave
+            } else if state.mode == "recording" && !state.paused {
+                0.9
+            } else {
+                0.25
+            };
+
             self.bar_springs[i].set_target(target_h);
             self.bar_springs[i].tick(dt);
+            self.bar_opacity_springs[i].set_target(target_opacity);
+            self.bar_opacity_springs[i].tick(dt);
         }
 
         // -- Error auto-dismiss --
@@ -646,18 +659,22 @@ fn on_pill_click_callback() {
 }
 
 fn on_pause_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle() {
-        use tauri::Manager;
-        let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-        orch.toggle_pause();
+    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
+        std::thread::spawn(move || {
+            use tauri::Manager;
+            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
+            orch.toggle_pause();
+        });
     }
 }
 
 fn on_stop_callback() {
-    if let Some(app) = crate::sidecar::get_app_handle() {
-        use tauri::Manager;
-        let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
-        orch.stop_hands_free();
+    if let Some(app) = crate::sidecar::get_app_handle().cloned() {
+        std::thread::spawn(move || {
+            use tauri::Manager;
+            let orch: tauri::State<'_, Arc<orchestrator::Orchestrator>> = app.state();
+            orch.stop_hands_free();
+        });
     }
 }
 
@@ -867,6 +884,11 @@ unsafe extern "system" fn wnd_proc(
 
                     let control_hit_radius = CONTROL_HIT_RADIUS * geom.content_scale.max(0.75);
                     if pause_dist < control_hit_radius {
+                        update_state(|st| {
+                            if st.hands_free && st.mode == "recording" {
+                                st.paused = !st.paused;
+                            }
+                        });
                         on_pause_callback();
                     } else if stop_dist < control_hit_radius {
                         on_stop_callback();
@@ -1164,6 +1186,15 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
         }
     }
 
+    // -- Error card (above pill, matching onboarding/transient prompt cards) --
+    if state.mode == "error" {
+        if let Some(ref msg) = state.error {
+            if let Some(ref fr) = font {
+                render_error_card(&mut pixmap, fr, msg, cx, pill_cy - CARD_GAP_Y);
+            }
+        }
+    }
+
     // -- Elapsed time (above pill, hands-free) --
     if state.mode == "recording" && state.elapsed >= 10.0 {
         if let Some(ref fr) = font {
@@ -1278,12 +1309,18 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
                 );
             }
         }
+        "pending" => {
+            render_bars(
+                &mut pixmap,
+                anim,
+                &state,
+                pill_content_cx,
+                pill_cy,
+                pill_scale,
+            );
+        }
         "error" => {
-            if let Some(ref msg) = state.error {
-                if let Some(ref fr) = font {
-                    render_error_content(&mut pixmap, fr, msg, pill_content_cx, pill_cy);
-                }
-            }
+            render_flat_bars(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
         }
         "noSpeech" => {
             if state.onboarding_step.is_none()
@@ -1292,14 +1329,7 @@ fn render_frame(hwnd: HWND, anim: &mut AnimState, font: &Option<FontRenderer>) {
                 render_flat_bars(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
             }
         }
-        "idle" => {
-            if state.onboarding_step.is_none() {
-                if state.hovering {
-                    // Mic icon
-                    draw_mic_icon(&mut pixmap, pill_content_cx, pill_cy, pill_scale);
-                }
-            }
-        }
+        "idle" => {}
         _ => {}
     }
 
@@ -1530,23 +1560,12 @@ fn render_bars(
     let bar_gap = BAR_GAP * scale;
     let bars_total_w = BARS_TOTAL_W * scale;
     let start_x = cx - bars_total_w / 2.0;
-    let is_processing = state.mode == "processing";
-    let t = anim.start_time.elapsed().as_secs_f64();
 
     for i in 0..BAR_COUNT {
         let bar_h = anim.bar_springs[i].val() * scale;
         let x = start_x + i as f32 * (bar_w + bar_gap);
         let y = cy - bar_h / 2.0;
-
-        let opacity = if is_processing {
-            let wave_t = (t % 1.2) / 1.2;
-            let wave_center = -5.0 + wave_t as f32 * 20.0;
-            let dist = (i as f32 - wave_center).abs();
-            let wave = (-dist * dist / 6.0).exp();
-            0.35 + 0.6 * wave
-        } else {
-            0.9
-        };
+        let opacity = anim.bar_opacity_springs[i].val();
 
         let bar_path = rounded_rect(x, y, bar_w, bar_h, 1.5 * scale);
         let mut paint = tiny_skia::Paint::default();
@@ -1733,80 +1752,59 @@ fn draw_stop_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, scale: f32, 
     );
 }
 
-fn draw_mic_icon(pixmap: &mut tiny_skia::Pixmap, cx: f32, cy: f32, scale: f32) {
-    let mut paint = tiny_skia::Paint::default();
-    paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.9).unwrap());
-    paint.anti_alias = true;
-
-    // Mic body (rounded rect)
-    let mic = rounded_rect(
-        cx - 4.0 * scale,
-        cy - 9.0 * scale,
-        8.0 * scale,
-        13.0 * scale,
-        4.0 * scale,
-    );
-    pixmap.fill_path(
-        &mic,
-        &paint,
-        tiny_skia::FillRule::Winding,
-        Default::default(),
-        None,
-    );
-
-    // Mic arc
-    let stroke = tiny_skia::Stroke {
-        width: 1.5 * scale,
-        ..Default::default()
-    };
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(cx - 7.0 * scale, cy);
-    pb.cubic_to(
-        cx - 7.0 * scale,
-        cy + 6.0 * scale,
-        cx - 4.0 * scale,
-        cy + 9.0 * scale,
-        cx,
-        cy + 9.0 * scale,
-    );
-    pb.cubic_to(
-        cx + 4.0 * scale,
-        cy + 9.0 * scale,
-        cx + 7.0 * scale,
-        cy + 6.0 * scale,
-        cx + 7.0 * scale,
-        cy,
-    );
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(&path, &paint, &stroke, Default::default(), None);
-    }
-
-    // Mic stem
-    let mut pb = tiny_skia::PathBuilder::new();
-    pb.move_to(cx, cy + 9.0 * scale);
-    pb.line_to(cx, cy + 12.0 * scale);
-    if let Some(path) = pb.finish() {
-        pixmap.stroke_path(&path, &paint, &stroke, Default::default(), None);
-    }
-}
-
-fn render_error_content(
+fn render_error_card(
     pixmap: &mut tiny_skia::Pixmap,
     font: &FontRenderer,
     message: &str,
     cx: f32,
     cy: f32,
 ) {
+    let font_size = 14.0;
+    let icon_w = 10.0;
+    let gap = 7.0;
+    let text_w = font.measure(message, font_size);
+    let content_w = icon_w + gap + text_w;
+    let pad_h = 16.0;
+    let pad_v = 10.0;
+    let card_w = content_w + pad_h * 2.0;
+    let card_h = font_size + pad_v * 2.0;
+    let card_r = card_h / 2.0;
+
+    let card_x = cx - card_w / 2.0;
+    let card_y = cy - card_h / 2.0;
+    let card_path = rounded_rect(card_x, card_y, card_w, card_h, card_r);
+
+    let mut bg_paint = tiny_skia::Paint::default();
+    bg_paint.set_color(tiny_skia::Color::from_rgba(0.06, 0.06, 0.1, 0.75).unwrap());
+    bg_paint.anti_alias = true;
+    pixmap.fill_path(
+        &card_path,
+        &bg_paint,
+        tiny_skia::FillRule::Winding,
+        Default::default(),
+        None,
+    );
+
+    let mut border_paint = tiny_skia::Paint::default();
+    border_paint.set_color(tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 0.3).unwrap());
+    border_paint.anti_alias = true;
+    let stroke = tiny_skia::Stroke {
+        width: 1.0,
+        ..Default::default()
+    };
+    pixmap.stroke_path(&card_path, &border_paint, &stroke, Default::default(), None);
+
     // Warning triangle icon (simplified)
     let mut paint = tiny_skia::Paint::default();
-    paint.set_color(tiny_skia::Color::from_rgba(0.9, 0.2, 0.2, 1.0).unwrap());
+    paint.set_color(tiny_skia::Color::from_rgba(1.0, 0.42, 0.42, 1.0).unwrap());
     paint.anti_alias = true;
-    let icon_x = cx - font.measure(message, 11.0) / 2.0 - 14.0;
+    let content_x = cx - content_w / 2.0;
+    let icon_x = content_x;
     let mut pb = tiny_skia::PathBuilder::new();
-    let s = 6.0;
-    pb.move_to(icon_x, cy + s * 0.6);
-    pb.line_to(icon_x + s, cy + s * 0.6);
-    pb.line_to(icon_x + s / 2.0, cy - s * 0.6);
+    let s = icon_w;
+    pb.move_to(icon_x, cy + s * 0.45);
+    pb.line_to(icon_x + s, cy + s * 0.45);
+    pb.line_to(icon_x + s / 2.0, cy - s * 0.55);
     pb.close();
     if let Some(path) = pb.finish() {
         pixmap.fill_path(
@@ -1822,9 +1820,9 @@ fn render_error_content(
     font.render(
         pixmap,
         message,
-        icon_x + 14.0,
-        cy + 4.0,
-        11.0,
+        content_x + icon_w + gap,
+        cy + font_size * 0.35,
+        font_size,
         [255, 255, 255, 230],
     );
 }
@@ -1938,10 +1936,7 @@ fn render_keycap(
 
 fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
     match step {
-        OnboardingStep::TryIt => format!(
-            "Hold {} and speak \u{2014} Yap transcribes it",
-            hotkey_label
-        ),
+        OnboardingStep::TryIt => format!("Hold {} to start recording", hotkey_label),
         OnboardingStep::Nice => {
             let msgs = [
                 "Nice!",
@@ -1954,9 +1949,9 @@ fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
             msgs[rand::random::<u32>() as usize % msgs.len()].to_string()
         }
         OnboardingStep::DoubleTapTip => {
-            format!("Double-tap {} for hands-free transcription", hotkey_label)
+            format!("Double-tap {} for hands-free recording", hotkey_label)
         }
-        OnboardingStep::ClickTip => "Click the pill for hands-free transcription".to_string(),
+        OnboardingStep::ClickTip => "Click the pill for hands-free recording".to_string(),
         OnboardingStep::ApiTip => {
             "Add an API key in the menu bar for better transcription".to_string()
         }
@@ -1965,8 +1960,6 @@ fn onboarding_card_text(step: &OnboardingStep, hotkey_label: &str) -> String {
                 .to_string()
         }
         OnboardingStep::Welcome => "You're all set \u{2014} enjoy!".to_string(),
-        OnboardingStep::SpeakTip => "Try speaking up".to_string(),
-        OnboardingStep::HoldTip => format!("Hold {} \u{2014} don't just tap it", hotkey_label),
     }
 }
 

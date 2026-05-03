@@ -315,9 +315,8 @@ fn label_part(value: &str) -> String {
 
 /// Double-tap detection window in seconds.
 ///
-/// This needs to feel forgiving because the first tap briefly enters the
-/// normal hold-to-record path before the second tap is known.
-pub(crate) const DOUBLE_TAP_WINDOW: f64 = 0.6;
+/// Keep this short so failed double-taps resolve quickly.
+pub(crate) const DOUBLE_TAP_WINDOW: f64 = 0.3;
 const MAX_TAP_DURATION: f64 = 0.5;
 
 /// Set the callbacks before calling `start()`.

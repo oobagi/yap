@@ -23,7 +23,7 @@
   import Prompt from './Prompt.svelte';
 
   interface OverlayData {
-    mode: 'idle' | 'recording' | 'processing' | 'noSpeech' | 'error';
+    mode: 'idle' | 'pending' | 'recording' | 'processing' | 'noSpeech' | 'error';
     bandLevels: number[];
     audioLevel: number;
     errorMessage: string;
@@ -69,14 +69,15 @@
     switch (overlayData.mode) {
       case 'recording': return 1.0;
       case 'processing': return 0.6;
+      case 'pending': return 0.0;
       default:
         return overlayData.onboardingStep ? 0.3 : 0.4;
     }
   });
 
-  // Gradient only shows during recording/processing (not idle)
+  // Gradient only shows during active states, not pending taps.
   let showGradient = $derived(
-    overlayData.gradientEnabled && isExpanded
+    overlayData.gradientEnabled && isExpanded && overlayData.mode !== 'pending'
   );
 
   // Audio bounce — pill scales with audio level during recording
@@ -263,6 +264,7 @@
       class="pill"
       class:idle={overlayData.mode === 'idle' && !overlayData.onboardingStep}
       class:recording={overlayData.mode === 'recording'}
+      class:pending={overlayData.mode === 'pending'}
       class:processing={overlayData.mode === 'processing'}
       class:error={overlayData.mode === 'error'}
       class:expanded={isExpanded}
@@ -296,9 +298,9 @@
           mode="noSpeech"
           isPaused={false}
         />
-      {:else if overlayData.mode === 'recording' || overlayData.mode === 'processing'}
-        <!-- Recording / Processing state -->
-        {#if overlayData.isHandsFree}
+      {:else if overlayData.mode === 'pending' || overlayData.mode === 'recording' || overlayData.mode === 'processing'}
+        <!-- Pending / Recording / Processing state -->
+        {#if overlayData.isHandsFree && overlayData.mode !== 'pending'}
           <div class="hands-free-controls">
             <!-- Pause / Resume button -->
             <button
@@ -342,7 +344,7 @@
         {:else}
           <!-- Standard waveform bars (no hands-free buttons) -->
           <WaveformBars
-            bandLevels={overlayData.bandLevels}
+            bandLevels={overlayData.mode === 'pending' ? Array(11).fill(0) : overlayData.bandLevels}
             mode={overlayData.mode}
             isPaused={overlayData.isPaused}
           />

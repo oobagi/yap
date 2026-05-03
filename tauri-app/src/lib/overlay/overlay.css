@@ -379,18 +379,6 @@
   100% { transform: translateX(0); }
 }
 
-/* Bar scale-in entrance */
-@keyframes barsScaleIn {
-  from {
-    transform: scaleX(0.001);
-    opacity: 0;
-  }
-  to {
-    transform: scaleX(1);
-    opacity: 1;
-  }
-}
-
 /* Elapsed timer fade-in */
 @keyframes fadeSlideIn {
   from {
@@ -419,10 +407,6 @@
 
 .animate-shake {
   animation: shake 500ms ease-out;
-}
-
-.animate-bars-enter {
-  animation: barsScaleIn 300ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .animate-fade-slide-in {

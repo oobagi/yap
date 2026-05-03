@@ -9,6 +9,7 @@ mod sidecar;
 mod speech;
 mod transcription;
 mod tray;
+mod vad;
 #[cfg(target_os = "windows")]
 mod win_overlay;
 mod windows;

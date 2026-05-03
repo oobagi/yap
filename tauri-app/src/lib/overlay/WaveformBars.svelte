@@ -30,7 +30,6 @@
   let shimmerOpacities: number[] = $state(Array(BAR_COUNT).fill(0.9));
   let audioDecay: number = $state(1);
   let waveStrength: number = $state(0);
-  let appeared: boolean = $state(false);
 
   // Computed bar heights based on mode
   let barHeights: number[] = $derived.by(() => {
@@ -42,7 +41,7 @@
       return shimmerHeights;
     }
 
-    if (mode === 'noSpeech') {
+    if (mode === 'noSpeech' || mode === 'pending') {
       return Array(BAR_COUNT).fill(MIN_HEIGHT);
     }
 
@@ -51,7 +50,7 @@
   });
 
   let barOpacities: number[] = $derived.by(() => {
-    if (isPaused || mode === 'noSpeech') {
+    if (isPaused || mode === 'noSpeech' || mode === 'pending') {
       return Array(BAR_COUNT).fill(0.25);
     }
     if (mode === 'processing') {
@@ -188,16 +187,8 @@
     return t * t * t;
   }
 
-  // Bar entrance animation
+  // Cleanup animation frames when the visualizer unmounts.
   $effect(() => {
-    if (mode === 'recording' || mode === 'processing' || mode === 'noSpeech') {
-      setTimeout(() => {
-        appeared = true;
-      }, 50);
-    } else if (mode === 'idle') {
-      appeared = false;
-    }
-
     return () => {
       if (shimmerFrame) {
         cancelAnimationFrame(shimmerFrame);
@@ -207,15 +198,7 @@
   });
 </script>
 
-<div
-  class="bars-container"
-  class:animate-bars-enter={appeared}
-  style="
-    transform: scaleX({appeared ? 1 : 0.001});
-    opacity: {appeared ? 1 : 0};
-    transition: transform 300ms cubic-bezier(0.16, 1, 0.3, 1), opacity 300ms cubic-bezier(0.16, 1, 0.3, 1);
-  "
->
+<div class="bars-container">
   {#each barHeights as height, i}
     <div
       class="bar"
@@ -244,7 +227,9 @@
     min-height: 5px;
     border-radius: 1.5px;
     background: white;
-    transition: height 60ms cubic-bezier(0.16, 1, 0.3, 1);
+    transition:
+      height 60ms cubic-bezier(0.16, 1, 0.3, 1),
+      opacity 180ms ease-out;
     will-change: height, opacity;
   }
 
