@@ -13,10 +13,10 @@ This document is the single source of truth for feature parity in the Tauri-base
 | Field | Value |
 |-------|-------|
 | App name | Yap |
-| macOS bundle ID | `com.yap.app` |
-| Windows app ID | `com.yap.app` |
+| macOS bundle ID | `com.yap.desktop` |
+| Windows app ID | `com.yap.desktop` |
 | Version scheme | SemVer: `MAJOR.MINOR.PATCH` |
-| Current version | `1.0.0` |
+| Current version | `2.0.1` |
 | Activation policy | **Background/accessory** -- no Dock icon (macOS `LSUIElement = true`), no taskbar window (Windows: tray-only) |
 
 ---

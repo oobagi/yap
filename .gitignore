@@ -3,7 +3,6 @@ build/
 .swiftpm/
 .DS_Store
 *.tar.gz
-.claude/
 
 # .NET build artifacts
 bin/

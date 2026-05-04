@@ -7,7 +7,6 @@ on:
       - "tauri-app/**"
       - "README.md"
       - "AGENTS.md"
-      - "CLAUDE.md"
       - ".github/workflows/tauri-build.yml"
     tags:
       - "v*"
@@ -17,7 +16,6 @@ on:
       - "tauri-app/**"
       - "README.md"
       - "AGENTS.md"
-      - "CLAUDE.md"
       - ".github/workflows/tauri-build.yml"
 
 jobs:

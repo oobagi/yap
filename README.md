@@ -9,6 +9,18 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/oobagi/yap/releases/latest">Download</a>
+  &middot;
+  <a href="https://github.com/oobagi/yap/releases">Releases</a>
+  &middot;
+  <a href="https://github.com/oobagi/yap/issues">Issues</a>
+  &middot;
+  <a href="https://github.com/oobagi/yap/actions/workflows/tauri-build.yml">Builds</a>
+  &middot;
+  <a href="https://github.com/oobagi/yap/blob/main/LICENSE">License</a>
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/macOS-13%2B-blue" alt="macOS 13+">
   <img src="https://img.shields.io/badge/Windows-10%2B-blue" alt="Windows 10+">
   <img src="https://img.shields.io/badge/Tauri-2-24c8db" alt="Tauri 2">
@@ -16,6 +28,12 @@
 </p>
 
 ---
+
+## Install
+
+Download the latest macOS or Windows installer from the repository's **Resources -> Releases** section:
+
+https://github.com/oobagi/yap/releases/latest
 
 ## Features
 
@@ -27,26 +45,6 @@
 - **Formatting providers**: Gemini, OpenAI, Anthropic, and Groq with casual, formatted, and professional styles.
 - **Clipboard preservation**: Writes the transcript, simulates paste, then restores the previous clipboard.
 
-## Build From Source
-
-```bash
-git clone https://github.com/oobagi/yap.git
-cd yap/tauri-app
-npm install
-npm run tauri -- build
-```
-
-Useful development commands:
-
-```bash
-npm run dev                 # frontend dev server
-npm run check               # Svelte/type checks
-npm run tauri -- dev        # run the desktop app in development
-npm run tauri -- build      # create app bundles/installers
-```
-
-macOS builds require Xcode Command Line Tools because the overlay sidecar is built with Swift. Windows builds require the standard Tauri Windows toolchain and WebView2.
-
 ## Usage
 
 Yap supports three recording modes:
@@ -57,7 +55,7 @@ Yap supports three recording modes:
 | Hands-free double-tap | Double-tap the hotkey, speak, tap again to stop |
 | Hands-free pill | Click the floating pill, speak, click Stop |
 
-Recordings that are too short or too quiet are discarded before hitting paid APIs.
+Short or silent recordings are discarded before paid APIs are called.
 
 ## Permissions
 
@@ -69,13 +67,27 @@ On macOS, grant these in System Settings -> Privacy & Security:
 | Speech Recognition | On-device transcription and speech pre-checks |
 | Accessibility | Detect the global hotkey and paste into other apps |
 
-On Windows, allow microphone access and keep WebView2 installed.
+On Windows, allow microphone access.
 
 ## Configuration
 
 Open the tray/menu bar icon -> **Settings**. Config is stored at `~/.config/yap/config.json`.
 
-Empty model fields fall back to provider defaults. Formatting can reuse the transcription API key when its own key is blank.
+Empty model fields use provider defaults. Formatting can reuse the transcription API key when its own key is blank.
+
+## Build From Source
+
+```bash
+git clone https://github.com/oobagi/yap.git
+cd yap/tauri-app
+npm install
+npm run dev                 # frontend dev server
+npm run check               # Svelte/type checks
+npm run tauri -- dev        # run the desktop app in development
+npm run tauri -- build      # create app bundles/installers
+```
+
+macOS builds require Xcode Command Line Tools for the Swift overlay sidecar. Windows builds require the standard Tauri Windows toolchain.
 
 ## Project Layout
 
