@@ -2,6 +2,10 @@
 
 This directory contains the canonical Yap desktop app.
 
+For normal installation, use the latest installer from the root README or GitHub Releases:
+
+https://github.com/oobagi/yap/releases/latest
+
 ## Commands
 
 ```bash

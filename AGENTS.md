@@ -12,12 +12,14 @@ npm run tauri -- dev
 npm run tauri -- build
 ```
 
+User installation should point to GitHub Releases first. These commands are for development and source builds.
+
 The canonical application lives in `tauri-app/`. The old root-level Swift package has been removed; Swift remains only as the macOS overlay sidecar under `tauri-app/src-tauri/sidecar-overlay/`.
 
 Runtime permissions:
 
 - macOS: Microphone, Speech Recognition, and Accessibility.
-- Windows: Microphone access and WebView2.
+- Windows: Microphone access.
 
 ## Architecture
 
@@ -67,4 +69,3 @@ Empty model strings fall back to provider defaults. Formatting falls back to the
 - Keep cross-platform behavior in the Rust orchestrator where possible.
 - Use platform-specific code only for OS integration: hotkeys, overlay behavior, paste, speech, bundling, and permissions.
 - The app and tray icons used by builds live under `tauri-app/src-tauri/icons/`.
-- Local agent files in `.claude/` are intentionally ignored.
