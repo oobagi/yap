@@ -24,6 +24,10 @@ enum OverlayLayout {
     static let idlePillHitWidth: CGFloat = 160
     static let idlePillHitHeight: CGFloat = 70
 
+    static let permissionCardHitY: CGFloat = 425
+    static let permissionCardHitWidth: CGFloat = 390
+    static let permissionCardHitHeight: CGFloat = 160
+
     static let hoverTooltipYOffset: CGFloat = -24
     static let hoverTooltipTransitionYOffset: CGFloat = 4
 }

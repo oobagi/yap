@@ -10,16 +10,16 @@ class ClickTargetView: NSView {
     override func mouseDown(with event: NSEvent) { onClick?() }
 }
 
-/// Content view that passes clicks through except on ClickTargetViews and the pill region.
+/// Content view that passes clicks through except on explicit overlay targets.
 class OverlayContentView: NSView {
     var pillHitRegion: NSRect = .zero
-    var permissionHitEnabled: Bool = false
+    var permissionHitRegion: NSRect = .zero
     var onPermissionClick: (() -> Void)?
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if permissionHitEnabled {
+        if permissionHitRegion.contains(point) {
             return self
         }
         for subview in subviews.reversed() {
@@ -34,7 +34,8 @@ class OverlayContentView: NSView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        if permissionHitEnabled {
+        let point = convert(event.locationInWindow, from: nil)
+        if permissionHitRegion.contains(point) {
             onPermissionClick?()
         }
     }
@@ -316,7 +317,16 @@ class OverlayPanel: NSPanel {
     private func updatePillTarget() {
         let cx = frame.width / 2
         let isExpanded = overlayState.mode != .idle || overlayState.onboardingStep != nil || overlayState.permissionPrompt != nil
-        contentOverlay?.permissionHitEnabled = overlayState.permissionPrompt != nil
+        if overlayState.permissionPrompt != nil {
+            contentOverlay?.permissionHitRegion = NSRect(
+                x: cx - OverlayLayout.permissionCardHitWidth / 2,
+                y: OverlayLayout.permissionCardHitY,
+                width: OverlayLayout.permissionCardHitWidth,
+                height: OverlayLayout.permissionCardHitHeight
+            )
+        } else {
+            contentOverlay?.permissionHitRegion = .zero
+        }
         switch overlayState.mode {
         case .processing:
             contentOverlay?.pillHitRegion = .zero

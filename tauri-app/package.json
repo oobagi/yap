@@ -1,6 +1,6 @@
 {
   "name": "yap",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Cross-platform voice-to-text tray app",
   "type": "module",
   "scripts": {
