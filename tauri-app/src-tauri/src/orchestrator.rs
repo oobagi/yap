@@ -14,6 +14,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::audio::{self, AudioLevels};
+use crate::audio_ducking;
 use crate::config::{self, AppConfig};
 use crate::formatting::{self, FormattingOptions, FormattingProvider};
 use crate::history;
@@ -30,6 +31,7 @@ const SOUND_START_PRESS: &str = "Blow";
 const SOUND_HANDS_FREE: &str = "HandsFree";
 const SOUND_NEXT: &str = "Pop";
 const SOUND_SKIP: &str = "Skip";
+const PRE_RECORDING_CUE_DELAY: Duration = Duration::from_millis(220);
 
 // ---------------------------------------------------------------------------
 // State machine
@@ -563,7 +565,10 @@ impl Orchestrator {
         if duration < 0.5 && peak < 0.15 {
             log::info("Too short / quiet -- waiting for possible double-tap");
             if audio::stop_recording().is_ok() {
+                audio_ducking::end();
                 play_sound(&self.app_handle(), SOUND_SKIP);
+            } else {
+                audio_ducking::end();
             }
             let (app, generation) = {
                 let mut inner = self.inner.lock().unwrap();
@@ -612,27 +617,23 @@ impl Orchestrator {
                 inner.ignore_pending_key_up = true;
                 inner.emit_state();
                 drop(inner);
-                play_sound(&app, SOUND_HANDS_FREE);
+                play_recording_transition_sound(&app, SOUND_HANDS_FREE);
                 log::info("Converted to hands-free recording");
             }
             AppState::Idle | AppState::PressPending | AppState::TapPending => {
-                if on_double_tap_tip {
-                    inner.begin_recording();
-                    drop(inner);
-                } else {
-                    inner.begin_recording();
-                    drop(inner);
-                }
+                let app = inner.app.clone();
+                inner.begin_recording();
+                drop(inner);
+
+                play_pre_recording_sound(&app, SOUND_HANDS_FREE);
 
                 match start_configured_recording() {
                     Ok(_) => {
                         let mut inner = self.inner.lock().unwrap();
-                        let app = inner.app.clone();
                         inner.state = AppState::HandsFreeRecording;
                         inner.ignore_pending_key_up = true;
                         inner.emit_state();
                         drop(inner);
-                        play_sound(&app, SOUND_HANDS_FREE);
                         log::info("Hands-free recording started");
                         self.complete_onboarding_recording_action(
                             OnboardingStep::DoubleTapTip,
@@ -742,18 +743,19 @@ impl Orchestrator {
         match inner.state {
             AppState::Idle => {
                 // Start click-to-record (hands-free)
+                let app = inner.app.clone();
                 inner.begin_recording();
                 drop(inner);
+
+                play_pre_recording_sound(&app, SOUND_HANDS_FREE);
 
                 match start_configured_recording() {
                     Ok(_) => {
                         let mut inner = self.inner.lock().unwrap();
-                        let app = inner.app.clone();
                         inner.state = AppState::HandsFreeRecording;
                         inner.ignore_pending_key_up = false;
                         inner.emit_state();
                         drop(inner);
-                        play_sound(&app, SOUND_HANDS_FREE);
                         log::info("Pill click: hands-free recording started");
                         self.complete_onboarding_recording_action(
                             OnboardingStep::ClickTip,
@@ -775,7 +777,7 @@ impl Orchestrator {
                 inner.ignore_pending_key_up = true;
                 inner.emit_state();
                 drop(inner);
-                play_sound(&app, SOUND_HANDS_FREE);
+                play_recording_transition_sound(&app, SOUND_HANDS_FREE);
                 log::info("Pill click: converted to hands-free");
             }
             AppState::PressPending => {
@@ -963,6 +965,7 @@ impl Orchestrator {
     /// Skip a recording attempt without surfacing user-facing error UI.
     fn skip_and_minimize(&self, reason: &str, play_skip_sound: bool) {
         log::info(reason);
+        audio_ducking::end();
         let mut inner = self.inner.lock().unwrap();
         inner.state = AppState::Idle;
         inner.emit_state();
@@ -1030,6 +1033,7 @@ impl Orchestrator {
         let wav_path = match audio::stop_recording() {
             Ok(p) => p,
             Err(e) => {
+                audio_ducking::end();
                 log::info(&format!("Stop recording failed: {e}"));
                 let mut inner = self.inner.lock().unwrap();
                 inner.state = AppState::Idle;
@@ -1037,6 +1041,7 @@ impl Orchestrator {
                 return;
             }
         };
+        audio_ducking::end();
         play_sound(&self.app_handle(), SOUND_SKIP);
 
         let peak = {
@@ -1169,7 +1174,18 @@ impl Orchestrator {
 fn start_configured_recording() -> Result<PathBuf, String> {
     let cfg = config::get();
     let device = cfg.audio_device.trim();
-    audio::start_recording((!device.is_empty()).then_some(device))
+
+    // Quiet background audio before opening the microphone so the first
+    // recorded samples do not include whatever was playing behind Yap.
+    audio_ducking::begin(cfg.quiet_audio_while_recording);
+
+    match audio::start_recording((!device.is_empty()).then_some(device)) {
+        Ok(path) => Ok(path),
+        Err(e) => {
+            audio_ducking::end();
+            Err(e)
+        }
+    }
 }
 
 async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<String, String> {
@@ -1304,6 +1320,23 @@ fn is_no_speech_error(error: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Sound effects
 // ---------------------------------------------------------------------------
+
+fn play_pre_recording_sound(app: &AppHandle, name: &str) {
+    if !config::get().sounds_enabled {
+        return;
+    }
+
+    play_sound(app, name);
+    std::thread::sleep(PRE_RECORDING_CUE_DELAY);
+}
+
+fn play_recording_transition_sound(app: &AppHandle, name: &str) {
+    if config::get().quiet_audio_while_recording {
+        return;
+    }
+
+    play_sound(app, name);
+}
 
 pub(crate) fn play_sound(app: &AppHandle, name: &str) {
     let cfg = config::get();

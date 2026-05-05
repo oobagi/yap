@@ -1,4 +1,5 @@
 mod audio;
+mod audio_ducking;
 mod config;
 mod formatting;
 mod history;

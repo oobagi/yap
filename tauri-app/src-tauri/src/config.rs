@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use crate::formatting::{FormattingProvider, FormattingStyle};
 use crate::transcription::TranscriptionProvider;
 
-/// All 21 config keys from the Yap spec, plus serde defaults for each.
+/// Full app configuration, plus serde defaults for each persisted field.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
@@ -83,6 +83,10 @@ pub struct AppConfig {
     #[serde(default = "default_true")]
     pub sounds_enabled: bool,
 
+    /// Reduce or mute other app audio while Yap is actively recording.
+    #[serde(default = "default_true")]
+    pub quiet_audio_while_recording: bool,
+
     /// Show the animated gradient background on the overlay
     #[serde(default = "default_true")]
     pub gradient_enabled: bool,
@@ -149,6 +153,7 @@ impl Default for AppConfig {
             gemini_temperature: 0.0,
             el_language_code: String::new(),
             sounds_enabled: true,
+            quiet_audio_while_recording: true,
             gradient_enabled: true,
             always_visible_pill: true,
             history_enabled: true,

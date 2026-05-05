@@ -33,6 +33,7 @@
     geminiTemperature: number;
     elLanguageCode: string;
     soundsEnabled: boolean;
+    quietAudioWhileRecording: boolean;
     gradientEnabled: boolean;
     alwaysVisiblePill: boolean;
     historyEnabled: boolean;
@@ -137,6 +138,7 @@
 
   // Appearance
   let soundsEnabled = $state(true);
+  let quietAudioWhileRecording = $state(true);
   let gradientEnabled = $state(true);
   let alwaysVisiblePill = $state(true);
   let startWithSystem = $state(false);
@@ -211,6 +213,7 @@
       geminiTemperature = cfg.geminiTemperature;
       elLanguageCode = cfg.elLanguageCode;
       soundsEnabled = cfg.soundsEnabled;
+      quietAudioWhileRecording = cfg.quietAudioWhileRecording ?? true;
       gradientEnabled = cfg.gradientEnabled;
       alwaysVisiblePill = cfg.alwaysVisiblePill;
       historyEnabled = cfg.historyEnabled;
@@ -259,6 +262,7 @@
         geminiTemperature,
         elLanguageCode,
         soundsEnabled,
+        quietAudioWhileRecording,
         gradientEnabled,
         alwaysVisiblePill,
         historyEnabled,
@@ -915,6 +919,20 @@
             </div>
             <label class="toggle-switch">
               <input type="checkbox" bind:checked={soundsEnabled} />
+              <span class="toggle-track"></span>
+              <span class="toggle-thumb"></span>
+            </label>
+          </div>
+
+          <div class="field-divider"></div>
+
+          <div class="toggle-row">
+            <div class="toggle-info">
+              <span class="toggle-label">Quiet background audio</span>
+              <span class="toggle-description">Reduce or mute other app audio while recording</span>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" bind:checked={quietAudioWhileRecording} />
               <span class="toggle-track"></span>
               <span class="toggle-thumb"></span>
             </label>

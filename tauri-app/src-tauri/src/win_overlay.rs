@@ -19,7 +19,7 @@
 #![cfg(target_os = "windows")]
 
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use windows::core::*;
 use windows::Win32::Foundation::*;
