@@ -10,6 +10,7 @@ static LISTENER_EPOCH: AtomicU64 = AtomicU64::new(0);
 /// Callback type for hotkey events.
 type HotkeyCallback = Box<dyn Fn() + Send + 'static>;
 type CaptureCallback = Box<dyn Fn(String) + Send + 'static>;
+type PermissionCallback = Box<dyn Fn(String) + Send + 'static>;
 
 /// Stored callbacks for hotkey events (set by the caller before start).
 static CALLBACKS: once_cell::sync::Lazy<Mutex<HotkeyCallbacks>> =
@@ -22,6 +23,9 @@ static CALLBACKS: once_cell::sync::Lazy<Mutex<HotkeyCallbacks>> =
     });
 
 static CAPTURE_CALLBACKS: once_cell::sync::Lazy<Mutex<Option<CaptureCallbacks>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(None));
+
+static PERMISSION_CALLBACK: once_cell::sync::Lazy<Mutex<Option<PermissionCallback>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
 struct HotkeyCallbacks {
@@ -45,6 +49,7 @@ enum RuntimeEvent {
     DoubleTap,
     CapturePreview(String),
     CaptureFinish(CaptureCallback, String),
+    PermissionRequired(String),
 }
 
 static DISPATCHER: once_cell::sync::Lazy<mpsc::Sender<RuntimeEvent>> =
@@ -85,6 +90,13 @@ static DISPATCHER: once_cell::sync::Lazy<mpsc::Sender<RuntimeEvent>> =
                         }
                         RuntimeEvent::CaptureFinish(callback, shortcut) => {
                             callback(shortcut);
+                        }
+                        RuntimeEvent::PermissionRequired(label) => {
+                            if let Ok(cb) = PERMISSION_CALLBACK.lock() {
+                                if let Some(ref f) = *cb {
+                                    f(label);
+                                }
+                            }
                         }
                     }
                 }
@@ -332,6 +344,12 @@ pub fn set_callbacks(
     }
 }
 
+pub fn set_permission_required_callback(on_permission_required: impl Fn(String) + Send + 'static) {
+    if let Ok(mut cb) = PERMISSION_CALLBACK.lock() {
+        *cb = Some(Box::new(on_permission_required));
+    }
+}
+
 pub fn begin_capture(
     on_preview: impl Fn(String) + Send + 'static,
     on_capture: impl Fn(String) + Send + 'static,
@@ -375,6 +393,10 @@ fn finish_capture(shortcut: String) {
     if let Some(callback) = callback {
         dispatch(RuntimeEvent::CaptureFinish(callback, shortcut));
     }
+}
+
+fn notify_permission_required(label: String) {
+    dispatch(RuntimeEvent::PermissionRequired(label));
 }
 
 // ---------------------------------------------------------------------------
@@ -524,8 +546,6 @@ mod platform {
     static CAPTURE_LAST_SHORTCUT: once_cell::sync::Lazy<Mutex<String>> =
         once_cell::sync::Lazy::new(|| Mutex::new(String::new()));
 
-    static ACCESSIBILITY_RETRY_PENDING: AtomicBool = AtomicBool::new(false);
-
     const ALL_MODIFIER_FLAGS: u64 = K_CG_EVENT_FLAG_MASK_SHIFT
         | K_CG_EVENT_FLAG_MASK_CONTROL
         | K_CG_EVENT_FLAG_MASK_ALTERNATE
@@ -577,8 +597,9 @@ mod platform {
                 "[yap] HOTKEY WAITING: grant Accessibility permission to enable {}",
                 spec.label()
             );
+            let label = spec.label();
             RUNNING.store(false, Ordering::SeqCst);
-            request_accessibility_and_retry(spec, generation);
+            notify_permission_required(label);
             return;
         }
 
@@ -614,8 +635,9 @@ mod platform {
 
                     if tap.is_null() {
                         eprintln!("[yap] HOTKEY FAILED: add this app to System Settings → Privacy & Security → Accessibility");
+                        let label = spec.label();
                         RUNNING.store(false, Ordering::SeqCst);
-                        request_accessibility_and_retry(spec, generation);
+                        notify_permission_required(label);
                         return;
                     }
                     eprintln!("[yap] Hotkey CGEventTap created successfully");
@@ -683,35 +705,12 @@ mod platform {
         }
     }
 
-    fn request_accessibility_and_retry(spec: HotkeySpec, generation: u64) {
-        if ACCESSIBILITY_RETRY_PENDING.swap(true, Ordering::SeqCst) {
-            return;
-        }
+    pub fn has_accessibility_permission() -> bool {
+        accessibility_trusted(false)
+    }
 
-        std::thread::Builder::new()
-            .name("yap-accessibility-wait".into())
-            .spawn(move || {
-                let _ = accessibility_trusted(true);
-
-                for _ in 0..120 {
-                    if LISTENER_EPOCH.load(Ordering::SeqCst) != generation {
-                        ACCESSIBILITY_RETRY_PENDING.store(false, Ordering::SeqCst);
-                        return;
-                    }
-
-                    if accessibility_trusted(false) {
-                        eprintln!("[yap] Accessibility granted; restarting hotkey listener");
-                        ACCESSIBILITY_RETRY_PENDING.store(false, Ordering::SeqCst);
-                        start(spec);
-                        return;
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_secs(1));
-                }
-
-                ACCESSIBILITY_RETRY_PENDING.store(false, Ordering::SeqCst);
-            })
-            .ok();
+    pub fn request_accessibility_permission() -> bool {
+        accessibility_trusted(true)
     }
 
     /// C callback for the CGEventTap.
@@ -1928,4 +1927,24 @@ pub fn stop() {
 /// Clear any pending first-tap candidate.
 pub fn clear_tap_sequence() {
     platform::clear_tap_sequence();
+}
+
+#[cfg(target_os = "macos")]
+pub fn has_accessibility_permission() -> bool {
+    platform::has_accessibility_permission()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn has_accessibility_permission() -> bool {
+    true
+}
+
+#[cfg(target_os = "macos")]
+pub fn request_accessibility_permission() -> bool {
+    platform::request_accessibility_permission()
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn request_accessibility_permission() -> bool {
+    true
 }

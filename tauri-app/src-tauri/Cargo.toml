@@ -1,6 +1,6 @@
 [package]
 name = "yap"
-version = "2.1.0"
+version = "2.1.1"
 description = "Yap - Cross-platform voice-to-text"
 authors = ["you"]
 edition = "2021"

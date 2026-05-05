@@ -45,6 +45,13 @@ pub enum OutMessage {
     Error {
         message: String,
     },
+    Permission {
+        title: String,
+        message: String,
+        #[serde(rename = "actionLabel")]
+        action_label: String,
+        visible: bool,
+    },
     Onboarding {
         step: String,
         text: String,
@@ -175,6 +182,11 @@ pub fn spawn(app: &tauri::AppHandle) {
                         let orch: tauri::State<'_, std::sync::Arc<orchestrator::Orchestrator>> =
                             app_handle.state();
                         orch.on_pill_click();
+                    }
+                    "permission_action" => {
+                        let orch: tauri::State<'_, std::sync::Arc<orchestrator::Orchestrator>> =
+                            app_handle.state();
+                        orch.on_permission_action();
                     }
                     "pause" => {
                         let orch: tauri::State<'_, std::sync::Arc<orchestrator::Orchestrator>> =

@@ -123,6 +123,11 @@ fn onboarding_text(step: &OnboardingStep, hotkey_label: &str) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionPromptKind {
+    Accessibility,
+}
+
 // ---------------------------------------------------------------------------
 // Orchestrator inner (lives behind Arc<Mutex<_>>)
 // ---------------------------------------------------------------------------
@@ -155,6 +160,11 @@ struct OrchestratorInner {
     hold_confirm_start: Option<Instant>,
     /// The hotkey label to display in onboarding cards.
     hotkey_label: String,
+
+    // -- Permission prompt state --
+    permission_prompt: Option<PermissionPromptKind>,
+    #[cfg(target_os = "macos")]
+    permission_poll_pending: bool,
 }
 
 impl OrchestratorInner {
@@ -335,6 +345,33 @@ impl OrchestratorInner {
         }
     }
 
+    fn emit_permission_prompt(&self) {
+        #[cfg(target_os = "macos")]
+        {
+            match self.permission_prompt {
+                Some(PermissionPromptKind::Accessibility) => {
+                    crate::sidecar::send(&crate::sidecar::OutMessage::Permission {
+                        title: "Enable Accessibility".to_string(),
+                        message: format!(
+                            "Yap needs Accessibility to listen for {} while other apps are focused.",
+                            self.hotkey_label
+                        ),
+                        action_label: "Open System Settings".to_string(),
+                        visible: true,
+                    });
+                }
+                None => {
+                    crate::sidecar::send(&crate::sidecar::OutMessage::Permission {
+                        title: String::new(),
+                        message: String::new(),
+                        action_label: String::new(),
+                        visible: false,
+                    });
+                }
+            }
+        }
+    }
+
     /// The effective onboarding step for input gating.
     fn effective_step(&self) -> Option<&OnboardingStep> {
         self.onboarding_step.as_ref()
@@ -370,6 +407,9 @@ impl Orchestrator {
                 onboarding_complete: cfg.onboarding_complete,
                 hold_confirm_start: None,
                 hotkey_label,
+                permission_prompt: None,
+                #[cfg(target_os = "macos")]
+                permission_poll_pending: false,
             }),
         }
     }
@@ -382,6 +422,90 @@ impl Orchestrator {
 
     fn app_handle(&self) -> AppHandle {
         self.inner.lock().unwrap().app.clone()
+    }
+
+    pub fn on_hotkey_permission_required(&self, hotkey_label: String) {
+        let mut inner = self.inner.lock().unwrap();
+        log::info(&format!(
+            "Accessibility permission required for hotkey: {hotkey_label}"
+        ));
+        inner.state = AppState::Idle;
+        inner.hold_confirm_start = None;
+        inner.permission_prompt = Some(PermissionPromptKind::Accessibility);
+        inner.emit_state();
+        inner.emit_permission_prompt();
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn on_permission_action(&self) {
+        let prompt = {
+            let mut inner = self.inner.lock().unwrap();
+            match inner.permission_prompt {
+                Some(prompt) if !inner.permission_poll_pending => {
+                    inner.permission_poll_pending = true;
+                    prompt
+                }
+                _ => return,
+            }
+        };
+
+        match prompt {
+            PermissionPromptKind::Accessibility => {
+                log::info("Requesting Accessibility permission from user action");
+                if hotkey::request_accessibility_permission() {
+                    self.finish_permission_granted(prompt);
+                    return;
+                }
+
+                let app = self.app_handle();
+                let orch = app.state::<Arc<Orchestrator>>();
+                let orch = Arc::clone(&orch);
+                std::thread::Builder::new()
+                    .name("yap-accessibility-permission-wait".into())
+                    .spawn(move || {
+                        for _ in 0..120 {
+                            if hotkey::has_accessibility_permission() {
+                                orch.finish_permission_granted(prompt);
+                                return;
+                            }
+                            std::thread::sleep(std::time::Duration::from_secs(1));
+                        }
+
+                        let mut inner = orch.inner.lock().unwrap();
+                        inner.permission_poll_pending = false;
+                        inner.emit_permission_prompt();
+                    })
+                    .ok();
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn finish_permission_granted(&self, prompt: PermissionPromptKind) {
+        match prompt {
+            PermissionPromptKind::Accessibility => {
+                log::info("Accessibility granted; restarting hotkey listener");
+                hotkey::stop();
+                let cfg = config::get();
+                let spec = parse_hotkey_spec(&cfg.hotkey);
+                let app = self.app_handle();
+                let orch = app.state::<Arc<Orchestrator>>();
+                start_hotkey_listener(Arc::clone(&orch), spec);
+            }
+        }
+
+        let mut inner = self.inner.lock().unwrap();
+        inner.permission_prompt = None;
+        inner.permission_poll_pending = false;
+        inner.emit_permission_prompt();
+        inner.emit_state();
+
+        if !inner.onboarding_complete {
+            if inner.onboarding_step.is_none() {
+                inner.onboarding_step = Some(OnboardingStep::TryIt);
+            }
+            inner.emit_onboarding();
+        }
     }
 
     fn begin_press_to_record(&self, inner: &mut OrchestratorInner) -> u64 {
@@ -719,6 +843,10 @@ impl Orchestrator {
             return;
         }
 
+        if inner.permission_prompt.is_some() {
+            return;
+        }
+
         // Always allow clicks that control an active recording (stop hands-free,
         // convert hold-to-record → hands-free). Only gate clicks that START a
         // new recording from idle.
@@ -887,6 +1015,10 @@ impl Orchestrator {
     /// Start onboarding if the user hasn't completed it yet.
     fn start_onboarding_if_needed(&self) {
         let mut inner = self.inner.lock().unwrap();
+        if inner.permission_prompt.is_some() {
+            inner.emit_permission_prompt();
+            return;
+        }
         if inner.onboarding_complete {
             return;
         }
@@ -1396,12 +1528,16 @@ fn start_hotkey_listener(orch: Arc<Orchestrator>, spec: HotkeySpec) {
     let orch_down = Arc::clone(&orch);
     let orch_up = Arc::clone(&orch);
     let orch_double = Arc::clone(&orch);
+    let orch_permission = Arc::clone(&orch);
 
     hotkey::set_callbacks(
         move || orch_down.on_key_down(),
         move || orch_up.on_key_up(),
         move || orch_double.on_double_tap(),
     );
+    hotkey::set_permission_required_callback(move |label| {
+        orch_permission.on_hotkey_permission_required(label);
+    });
 
     hotkey::start(spec);
 }

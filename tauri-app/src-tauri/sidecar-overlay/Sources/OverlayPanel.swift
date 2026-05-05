@@ -13,8 +13,15 @@ class ClickTargetView: NSView {
 /// Content view that passes clicks through except on ClickTargetViews and the pill region.
 class OverlayContentView: NSView {
     var pillHitRegion: NSRect = .zero
+    var permissionHitEnabled: Bool = false
+    var onPermissionClick: (() -> Void)?
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
+        if permissionHitEnabled {
+            return self
+        }
         for subview in subviews.reversed() {
             guard subview is ClickTargetView else { continue }
             let local = convert(point, to: subview)
@@ -24,6 +31,12 @@ class OverlayContentView: NSView {
             return super.hitTest(point)
         }
         return nil
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if permissionHitEnabled {
+            onPermissionClick?()
+        }
     }
 }
 
@@ -58,11 +71,13 @@ class OverlayPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = false
+        ignoresMouseEvents = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
         isMovableByWindowBackground = false
         hidesOnDeactivate = false
 
         let container = OverlayContentView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        container.onPermissionClick = { [weak self] in self?.overlayState.onPermissionAction?() }
         contentOverlay = container
 
         let hostingView = NSHostingView(rootView:
@@ -214,6 +229,23 @@ class OverlayPanel: NSPanel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
     }
 
+    func applyPermission(title: String?, message: String?, actionLabel: String?, visible: Bool) {
+        if visible {
+            overlayState.permissionPrompt = PermissionPrompt(
+                title: title ?? "",
+                message: message ?? "",
+                actionLabel: actionLabel ?? "Open System Settings"
+            )
+            showAtRest()
+        } else {
+            overlayState.permissionPrompt = nil
+            if !overlayState.alwaysVisible && overlayState.mode == .idle && overlayState.onboardingStep == nil {
+                slideOut()
+            }
+        }
+        updatePillTarget()
+    }
+
     func applyOnboarding(step: String?, text: String?, hotkeyLabel: String?) {
         if let label = hotkeyLabel {
             overlayState.hotkeyLabel = label
@@ -283,7 +315,8 @@ class OverlayPanel: NSPanel {
 
     private func updatePillTarget() {
         let cx = frame.width / 2
-        let isExpanded = overlayState.mode != .idle || overlayState.onboardingStep != nil
+        let isExpanded = overlayState.mode != .idle || overlayState.onboardingStep != nil || overlayState.permissionPrompt != nil
+        contentOverlay?.permissionHitEnabled = overlayState.permissionPrompt != nil
         switch overlayState.mode {
         case .processing:
             contentOverlay?.pillHitRegion = .zero
@@ -314,6 +347,12 @@ class OverlayPanel: NSPanel {
 
 enum OverlayMode: Equatable {
     case idle, pending, recording, processing, noSpeech, error(String)
+}
+
+struct PermissionPrompt: Equatable {
+    let title: String
+    let message: String
+    let actionLabel: String
 }
 
 enum OnboardingStep: Hashable {
@@ -353,6 +392,7 @@ class OverlayState: ObservableObject {
     @Published var mode: OverlayMode = .idle
     @Published var audioLevel: Float = 0
     @Published var bandLevels: [Float] = Array(repeating: 0, count: 11)
+    @Published var permissionPrompt: PermissionPrompt? = nil
     @Published var onboardingStep: OnboardingStep? = nil
     @Published var onboardingText: String = ""
     @Published var hotkeyLabel: String = "fn"
@@ -365,10 +405,11 @@ class OverlayState: ObservableObject {
     @Published var alwaysVisible: Bool = true
     @Published var handsFreeElapsed: TimeInterval = 0
     @Published var celebratingToken: UUID = UUID()
+    var onPermissionAction: (() -> Void)?
     var onPauseResume: (() -> Void)?
     var onStop: (() -> Void)?
     var onClickToRecord: (() -> Void)?
-    var isOnboarding: Bool { onboardingStep != nil }
+    var isOnboarding: Bool { permissionPrompt == nil && onboardingStep != nil }
 }
 
 // MARK: - SwiftUI Views
@@ -377,9 +418,9 @@ struct OverlayView: View {
     @ObservedObject var state: OverlayState
     @State private var shakeProgress: CGFloat = 0
 
-    private var isActive: Bool { state.mode != .idle || state.isOnboarding }
-    private var isExpanded: Bool { state.mode != .idle || state.isOnboarding }
-    private var isMinimized: Bool { state.mode == .idle && !state.isOnboarding }
+    private var isActive: Bool { state.mode != .idle || state.isOnboarding || state.permissionPrompt != nil }
+    private var isExpanded: Bool { state.mode != .idle || state.isOnboarding || state.permissionPrompt != nil }
+    private var isMinimized: Bool { state.mode == .idle && !state.isOnboarding && state.permissionPrompt == nil }
 
     private var gradientEnergy: CGFloat {
         switch state.mode {
@@ -388,6 +429,7 @@ struct OverlayView: View {
         case .processing: return 0.6
         default:
             if state.isHovering { return 0.15 }
+            if state.permissionPrompt != nil { return 0.3 }
             return state.isOnboarding ? 0.3 : 0.4
         }
     }
@@ -420,8 +462,15 @@ struct OverlayView: View {
                 Spacer()
 
                 VStack(spacing: 8) {
+                    if let prompt = state.permissionPrompt,
+                       state.mode == .idle || state.mode == .noSpeech {
+                        PermissionCardView(prompt: prompt)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
+                    }
+
                     // Shared prompt card for onboarding.
-                    if state.onboardingStep != nil,
+                    if state.permissionPrompt == nil,
+                       state.onboardingStep != nil,
                        state.mode == .idle || state.mode == .noSpeech {
                         PromptCardView(step: state.onboardingStep!, hotkeyLabel: state.hotkeyLabel)
                             .id(state.onboardingStep)
@@ -585,7 +634,9 @@ struct OverlayView: View {
                 flatBars.transition(.opacity)
 
             case .idle:
-                if state.isOnboarding {
+                if state.permissionPrompt != nil {
+                    flatBars.transition(.opacity)
+                } else if state.isOnboarding {
                     flatBars.transition(.opacity)
                 } else if state.isHovering {
                     Image(systemName: "mic.fill")
@@ -681,6 +732,50 @@ struct ErrorCardView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 25).strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
         )
+    }
+}
+
+struct PermissionCardView: View {
+    let prompt: PermissionPrompt
+
+    var body: some View {
+        VStack(spacing: 9) {
+            HStack(spacing: 7) {
+                Image(systemName: "lock.open.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.85))
+                Text(prompt.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+            }
+
+            Text(prompt.message)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+                .frame(width: 315)
+
+            Text(prompt.actionLabel)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.black.opacity(0.88))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 7)
+                .background(Capsule().fill(Color.white.opacity(0.9)))
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 18).fill(Color.black.opacity(0.78))
+                RoundedRectangle(cornerRadius: 18).fill(.thinMaterial)
+            }
+            .shadow(color: .black.opacity(0.35), radius: 16, y: 4)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18).strokeBorder(Color.white.opacity(0.3), lineWidth: 1)
+        )
+        .allowsHitTesting(false)
     }
 }
 

@@ -9,6 +9,7 @@ let panel = OverlayPanel()
 
 // Wire click callbacks → stdout IPC events
 panel.overlayState.onClickToRecord = { sendEvent("pill_click") }
+panel.overlayState.onPermissionAction = { sendEvent("permission_action") }
 panel.overlayState.onPauseResume = { sendEvent("pause") }
 panel.overlayState.onStop = { sendEvent("stop") }
 
@@ -48,6 +49,14 @@ DispatchQueue.global(qos: .userInteractive).async {
                 if let message = msg.message {
                     panel.applyError(message)
                 }
+
+            case "permission":
+                panel.applyPermission(
+                    title: msg.title,
+                    message: msg.message,
+                    actionLabel: msg.actionLabel,
+                    visible: msg.visible ?? false
+                )
 
             case "onboarding":
                 panel.applyOnboarding(

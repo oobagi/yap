@@ -18,6 +18,11 @@ struct IPCMessage: Decodable {
     // error
     let message: String?
 
+    // permission
+    let title: String?
+    let actionLabel: String?
+    let visible: Bool?
+
     // onboarding
     let step: String?
     let text: String?
