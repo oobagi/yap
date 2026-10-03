@@ -7,9 +7,14 @@ export interface HistoryEntry {
   id: string;
   timestamp: string;
   text: string;
+  rawText?: string | null;
+  formattedText?: string | null;
   transcriptionProvider: string;
+  transcriptionModel?: string | null;
   formattingProvider?: string | null;
+  formattingModel?: string | null;
   formattingStyle?: string | null;
+  formattingInstruction?: string | null;
 }
 
 const MAX_MENU_ENTRIES = 10;

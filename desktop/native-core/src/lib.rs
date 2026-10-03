@@ -1,5 +1,7 @@
+mod apple_format;
 mod audio;
 mod audio_ducking;
+mod cache;
 pub mod commands;
 pub mod config;
 pub mod dictation;
@@ -9,6 +11,7 @@ mod hotkey;
 mod local_whisper;
 mod log;
 pub mod model_manager;
+pub mod ollama;
 mod paste;
 mod sidecar;
 mod speech;

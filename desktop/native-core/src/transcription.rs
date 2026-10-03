@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::Duration;
 
-use crate::formatting::FormattingStyle;
+use crate::formatting::{custom_formatter_prompt, FormattingStyle};
 
 /// Transcription provider identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ pub async fn transcribe(
     match provider {
         TranscriptionProvider::None => transcribe_on_device(audio_path).await,
         TranscriptionProvider::LocalWhisper => transcribe_local_whisper(audio_path, options).await,
-        TranscriptionProvider::Gemini => transcribe_gemini(audio_path, options, None).await,
+        TranscriptionProvider::Gemini => transcribe_gemini(audio_path, options, None, None).await,
         TranscriptionProvider::OpenAI => transcribe_openai(audio_path, options).await,
         TranscriptionProvider::Deepgram => transcribe_deepgram(audio_path, options).await,
         TranscriptionProvider::ElevenLabs => transcribe_elevenlabs(audio_path, options).await,
@@ -107,8 +107,9 @@ pub async fn transcribe_gemini_oneshot(
     audio_path: &Path,
     options: &TranscriptionOptions,
     style: FormattingStyle,
+    custom_prompt: &str,
 ) -> Result<String, String> {
-    transcribe_gemini(audio_path, options, Some(style)).await
+    transcribe_gemini(audio_path, options, Some(style), Some(custom_prompt)).await
 }
 
 /// Compute timeout based on audio file size.
@@ -162,6 +163,7 @@ async fn transcribe_gemini(
     audio_path: &Path,
     options: &TranscriptionOptions,
     style: Option<FormattingStyle>,
+    custom_prompt: Option<&str>,
 ) -> Result<String, String> {
     let audio_data =
         std::fs::read(audio_path).map_err(|e| format!("failed to read audio file: {e}"))?;
@@ -172,7 +174,7 @@ async fn transcribe_gemini(
 
     // Use style-specific audio prompt for one-shot, or plain transcription prompt
     let prompt = match style {
-        Some(s) => audio_prompt_for_style(s),
+        Some(s) => audio_prompt_for_style(s, custom_prompt.unwrap_or_default()),
         None => plain_transcription_prompt(),
     };
 
@@ -570,26 +572,29 @@ pub fn extract_json(text: &str) -> String {
 const DICTATION_COMMANDS: &str = r#"DICTATION COMMANDS — when the speaker says any of these, insert the symbol instead of the words: "period" or "full stop" → . | "comma" → , | "question mark" → ? | "exclamation mark" or "exclamation point" → ! "colon" → : | "semicolon" → ; | "open parenthesis" or "open paren" → ( | "close parenthesis" or "close paren" → ) "open bracket" → [ | "close bracket" → ] | "open brace" or "open curly" → { | "close brace" or "close curly" → } "open quote" or "open quotes" → " | "close quote" or "close quotes" or "end quote" → " "dash" or "em dash" → — | "hyphen" → - | "ellipsis" or "dot dot dot" → … "new line" or "newline" → insert a line break | "new paragraph" → insert two line breaks "ampersand" → & | "at sign" → @ | "hashtag" or "hash" → # | "dollar sign" → $ | "percent" or "percent sign" → % "asterisk" or "star" → * | "slash" or "forward slash" → / | "backslash" → \ "underscore" → _ | "pipe" → | | "tilde" → ~ | "caret" → ^ Only convert these when the speaker clearly intends them as punctuation commands, not when used naturally in speech."#;
 
 const NOISE_RULE: &str = "IGNORE all background noise, sound effects, music, and non-speech sounds. Only transcribe human speech. If there is no speech, respond with {\"text\":\"\"}.";
+const LIST_FORMATTING_RULE: &str = "If the speaker dictates an ordered list, format it as separate numbered lines using digits and periods: \"1. item\", \"2. item\", \"3. item\". Do not spell list numbers as words when they are being used as list markers.";
 
 /// Audio prompt for one-shot transcribe+format (Gemini).
-pub fn audio_prompt_for_style(style: FormattingStyle) -> String {
-    match style {
+pub fn audio_prompt_for_style(style: FormattingStyle, custom_prompt: &str) -> String {
+    let prompt = match style {
         FormattingStyle::Casual => format!(
             "Transcribe this audio. Remove filler sounds (um, uh, er) but keep everything else exactly as spoken — \
-            casual phrases, slang, sentence structure, contractions. All lowercase. Minimal punctuation. \
+            casual phrases, slang, contractions, and meaning. All lowercase. Minimal punctuation. \
+            {} \
             {} \
             {} \
             You MUST respond with ONLY a JSON object: {{\"text\":\"transcription here\"}}",
-            DICTATION_COMMANDS, NOISE_RULE
+            DICTATION_COMMANDS, LIST_FORMATTING_RULE, NOISE_RULE
         ),
         FormattingStyle::Formatted => format!(
             "Transcribe this audio. Remove filler words (um, uh, er, like, you know). \
-            Fix punctuation and capitalization. Keep the speaker's EXACT words and sentence structure — \
-            do not rephrase or rewrite. Keep contractions as spoken. Only fix obvious grammar errors. \
+            Fix punctuation and capitalization. Keep the speaker's words and meaning — \
+            do not rephrase or rewrite the substance. Keep contractions as spoken. Only fix obvious grammar errors. \
+            {} \
             {} \
             {} \
             You MUST respond with ONLY a JSON object: {{\"text\":\"transcription here\"}}",
-            DICTATION_COMMANDS, NOISE_RULE
+            DICTATION_COMMANDS, LIST_FORMATTING_RULE, NOISE_RULE
         ),
         FormattingStyle::Professional => format!(
             "Transcribe this audio. Remove all filler words. Elevate the language to sound polished and professional. \
@@ -597,10 +602,41 @@ pub fn audio_prompt_for_style(style: FormattingStyle) -> String {
             Expand contractions. You MAY rephrase for clarity and professionalism, but keep the original meaning. \
             {} \
             {} \
+            {} \
             You MUST respond with ONLY a JSON object: {{\"text\":\"transcription here\"}}",
-            DICTATION_COMMANDS, NOISE_RULE
+            DICTATION_COMMANDS, LIST_FORMATTING_RULE, NOISE_RULE
         ),
-    }
+        FormattingStyle::Custom => {
+            let custom_prompt = custom_prompt.trim();
+            if custom_prompt.is_empty() {
+                format!(
+                    "Transcribe this audio. Remove filler words (um, uh, er, like, you know). \
+                    Fix punctuation and capitalization. Keep the speaker's words and meaning — \
+                    do not rephrase or rewrite the substance. Keep contractions as spoken. Only fix obvious grammar errors. \
+                    {} \
+                    {} \
+                    {} \
+                    You MUST respond with ONLY a JSON object: {{\"text\":\"transcription here\"}}",
+                    DICTATION_COMMANDS, LIST_FORMATTING_RULE, NOISE_RULE
+                )
+            } else {
+                format!(
+                    "Transcribe this audio, then transform the transcription according to the custom formatter instructions below. \
+                    The custom instructions are the PRIMARY TASK after transcription. Apply them literally and strongly. \
+                    {} \
+                    {} \
+                    {} \
+                    {}",
+                    DICTATION_COMMANDS,
+                    LIST_FORMATTING_RULE,
+                    NOISE_RULE,
+                    custom_formatter_prompt(custom_prompt)
+                )
+            }
+        }
+    };
+
+    prompt
 }
 
 /// Plain transcription prompt (no formatting, for when formatting is handled separately).

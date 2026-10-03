@@ -348,6 +348,15 @@ label {
   color: CanvasText;
 }
 
+.textarea {
+  height: auto;
+  min-height: 84px;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  line-height: 1.4;
+  resize: vertical;
+}
+
 .input:focus,
 .select:focus {
   border-color: var(--settings-primary-border);
@@ -642,7 +651,7 @@ label {
 
 .style-picker {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   gap: 8px;
 }
 
@@ -951,6 +960,7 @@ label {
 .history-badge {
   display: inline-flex;
   align-items: center;
+  max-width: 100%;
   min-height: 18px;
   padding: 0 7px;
   border: 1px solid var(--settings-border);
@@ -959,7 +969,56 @@ label {
   color: var(--settings-badge-text);
   font-size: 10px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.history-details {
+  color: var(--settings-text-muted);
+  font-size: 11px;
+}
+
+.history-details summary {
+  width: fit-content;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.history-detail-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.history-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.history-detail-label {
+  color: var(--settings-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.history-detail-block pre {
+  max-height: 140px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--settings-border);
+  border-radius: 6px;
+  background: var(--settings-bg);
+  color: CanvasText;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .history-entry-actions {

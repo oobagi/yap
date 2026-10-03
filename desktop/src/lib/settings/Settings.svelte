@@ -34,7 +34,8 @@
     appearanceModes,
     backgroundAudioModes,
     fmtDefaultModels,
-    fmtProviders,
+    formattingProviderRequiresApiKey,
+    formattingProviders,
     languageOptions,
     modifierOrder,
     providerLabels,
@@ -48,6 +49,9 @@
     type AppearanceMode,
     type BackgroundAudioMode,
     type HistoryEntry,
+    type OllamaDownloadEvent,
+    type OllamaModelList,
+    type OllamaModelSummary,
     type SectionId,
     type WhisperDownloadEvent,
     type WhisperModelList,
@@ -67,6 +71,7 @@
   const buildUrl = __GITHUB_COMMIT_URL__;
 
   const txProviders = transcriptionProviders(isWindows);
+  const fmtProviderOptions = formattingProviders(isMac);
 
   // ── State ─────────────────────────────────────────────────────────────
 
@@ -113,8 +118,20 @@
   let fmtApiKey = $state('');
   let fmtModel = $state('');
   let fmtStyle = $state('formatted');
+  let fmtCustomPrompt = $state('');
   let fmtUseSameKey = $state(true);
   let showFmtApiKey = $state(false);
+  let lastFmtProvider = 'none';
+  let ollamaModelList = $state<OllamaModelList | null>(null);
+  let ollamaModelsLoading = $state(false);
+  let ollamaModelsLoaded = $state(false);
+  let ollamaModelsError = $state('');
+  let ollamaSearchQuery = $state('');
+  let ollamaSearchResults = $state<OllamaModelSummary[]>([]);
+  let ollamaSearchLoading = $state(false);
+  let ollamaSearchError = $state('');
+  let ollamaDownloadEvent = $state<OllamaDownloadEvent | null>(null);
+  let pendingOllamaUseAfterDownload = $state<string | null>(null);
 
   // Behavior
   let soundsEnabled = $state(true);
@@ -161,6 +178,8 @@
 
   // Advanced
   let onboardingComplete = $state(false);
+  let cacheCleaning = $state(false);
+  let cacheMessage = $state('Remove the temporary recording and debug log from this device.');
 
   // Updates
   let updateStatus = $state<UpdateStatus>('idle');
@@ -176,6 +195,7 @@
   let hasTxProvider = $derived(txProvider !== 'none');
   let txProviderRequiresApiKey = $derived(transcriptionProviderRequiresApiKey(txProvider));
   let hasFmtProvider = $derived(fmtProvider !== 'none');
+  let fmtProviderRequiresApiKey = $derived(formattingProviderRequiresApiKey(fmtProvider));
   let txModelLabel = $derived(txProviderRequiresApiKey ? 'Model' : 'Model Spec');
   let txModelDescription = $derived.by(() => {
     if (txProviderRequiresApiKey) {
@@ -188,7 +208,7 @@
   });
 
   let canShareApiKey = $derived.by(() => {
-    if (!hasTxProvider || !hasFmtProvider) return false;
+    if (!hasTxProvider || !hasFmtProvider || !fmtProviderRequiresApiKey) return false;
     return (
       (txProvider === 'gemini' && fmtProvider === 'gemini') ||
       (txProvider === 'openai' && fmtProvider === 'openai')
@@ -200,6 +220,20 @@
   );
 
   let currentStyleData = $derived(styleData[fmtStyle] ?? styleData.formatted);
+  let effectiveOllamaModelId = $derived(fmtModel.trim() || fmtDefaultModels.ollama);
+  let recommendedOllamaModel = $derived.by(() => {
+    const list = ollamaModelList;
+    return list?.models.find((model) => sameOllamaModel(model.id, list.recommendedId)) ?? null;
+  });
+  let selectedOllamaModel = $derived.by(() => (
+    ollamaModelList?.models.find((model) => sameOllamaModel(model.id, effectiveOllamaModelId)) ?? null
+  ));
+  let recommendedOllamaMissing = $derived(
+    fmtProvider === 'ollama' &&
+      ollamaModelList?.serviceAvailable &&
+      !recommendedOllamaModel?.installed &&
+      (!fmtModel.trim() || sameOllamaModel(fmtModel.trim(), fmtDefaultModels.ollama))
+  );
   let effectiveWhisperModelId = $derived(txModel.trim() || txDefaultModels.localwhisper);
   let recommendedWhisperModel = $derived.by(() => {
     const list = whisperModelList;
@@ -260,10 +294,12 @@
         txModel = cfg.txModel;
         lastTxProvider = txProvider;
         txLanguage = languageValueFromConfig(cfg);
-        fmtProvider = cfg.fmtProvider;
+        fmtProvider = !isMac && cfg.fmtProvider === 'apple' ? 'none' : cfg.fmtProvider;
         fmtApiKey = cfg.fmtApiKey;
         fmtModel = cfg.fmtModel;
+        lastFmtProvider = fmtProvider;
         fmtStyle = cfg.fmtStyle;
+        fmtCustomPrompt = cfg.fmtCustomPrompt ?? '';
         onboardingComplete = cfg.onboardingComplete;
         dgSmartFormat = cfg.dgSmartFormat;
         dgKeywords = cfg.dgKeywords;
@@ -451,6 +487,138 @@
     return [model.sizeLabel, model.speedHint, model.accuracyHint].filter(Boolean).join(' · ');
   }
 
+  function ollamaModelMeta(model: OllamaModelSummary): string {
+    return [model.sizeLabel, model.speedHint, model.qualityHint].filter(Boolean).join(' · ');
+  }
+
+  function normalizeOllamaModel(id: string): string {
+    return id.trim().toLowerCase().replace(/:latest$/, '');
+  }
+
+  function sameOllamaModel(a: string, b: string): boolean {
+    return normalizeOllamaModel(a) === normalizeOllamaModel(b);
+  }
+
+  async function loadOllamaModels() {
+    if (!hasNativeRuntime) return;
+    ollamaModelsLoading = true;
+    ollamaModelsError = '';
+    try {
+      const result = await invokeRuntimeOptional<OllamaModelList>('models.ollama.list', undefined, 10000);
+      if (!result) {
+        ollamaModelList = unavailableOllamaModelList('Could not load Ollama models.');
+        ollamaModelsError = '';
+        ollamaModelsLoaded = true;
+        return;
+      }
+      ollamaModelList = result;
+      ollamaModelsLoaded = true;
+      ollamaModelsError = result.serviceError ?? '';
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      ollamaModelList = unavailableOllamaModelList(message);
+      ollamaModelsError = '';
+      ollamaModelsLoaded = true;
+    } finally {
+      ollamaModelsLoading = false;
+    }
+  }
+
+  function unavailableOllamaModelList(message: string): OllamaModelList {
+    return {
+      recommendedId: fmtDefaultModels.ollama,
+      serviceAvailable: false,
+      serviceError: message,
+      models: [],
+    };
+  }
+
+  async function searchOllamaModels() {
+    const query = ollamaSearchQuery.trim();
+    if (!query || !hasNativeRuntime) return;
+    ollamaSearchLoading = true;
+    ollamaSearchError = '';
+    try {
+      ollamaSearchResults = await invokeRuntime<OllamaModelSummary[]>('models.ollama.search', { query });
+    } catch (error) {
+      ollamaSearchError = error instanceof Error ? error.message : String(error);
+    } finally {
+      ollamaSearchLoading = false;
+    }
+  }
+
+  async function pullOllamaModel(model: OllamaModelSummary, useAfterDownload = true) {
+    if (!hasNativeRuntime || isAnyOllamaDownloadActive()) return;
+    ollamaModelsError = '';
+    ollamaDownloadEvent = {
+      id: model.id,
+      model: model.id,
+      status: 'started',
+    };
+    pendingOllamaUseAfterDownload = useAfterDownload ? model.id : null;
+    try {
+      await invokeRuntime('models.ollama.pull', { id: model.id });
+    } catch (error) {
+      ollamaModelsError = error instanceof Error ? error.message : String(error);
+      pendingOllamaUseAfterDownload = null;
+      ollamaDownloadEvent = { id: model.id, model: model.id, status: 'error', error: ollamaModelsError };
+    }
+  }
+
+  async function useOllamaModel(model: OllamaModelSummary) {
+    fmtModel = model.id;
+    await persistConfig();
+  }
+
+  async function deleteOllamaModel(model: OllamaModelSummary) {
+    if (!hasNativeRuntime || !model.installed) return;
+    const confirmed = window.confirm(
+      `Delete ${model.name}? This removes it from your local Ollama models.`,
+    );
+    if (!confirmed) return;
+
+    try {
+      await invokeRuntime('models.ollama.delete', { id: model.id });
+      if (sameOllamaModel(fmtModel, model.id)) {
+        fmtModel = '';
+      }
+      ollamaModelsLoaded = false;
+      await loadOllamaModels();
+    } catch (error) {
+      ollamaModelsError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  function isSelectedOllamaModel(model: OllamaModelSummary): boolean {
+    return sameOllamaModel(model.id, effectiveOllamaModelId);
+  }
+
+  function isDownloadingOllamaModel(model: OllamaModelSummary): boolean {
+    return (
+      ollamaDownloadEvent?.id === model.id &&
+      ['started', 'progress'].includes(ollamaDownloadEvent.status)
+    );
+  }
+
+  function isAnyOllamaDownloadActive(): boolean {
+    return !!ollamaDownloadEvent && ['started', 'progress'].includes(ollamaDownloadEvent.status);
+  }
+
+  function ollamaDownloadProgress(model: OllamaModelSummary): number {
+    if (!isDownloadingOllamaModel(model)) return 0;
+    return Math.round(ollamaDownloadEvent?.percent ?? 0);
+  }
+
+  function ollamaDownloadLabel(model: OllamaModelSummary): string {
+    const event = isDownloadingOllamaModel(model) ? ollamaDownloadEvent : null;
+    if (!event) return '';
+    if (event.message) return event.message;
+    if (event.total && event.transferred !== undefined) {
+      return `${formatBytes(event.transferred)} of ${formatBytes(event.total)}`;
+    }
+    return 'Starting';
+  }
+
   async function refreshConfig() {
     if (loading) return;
     await loadConfig();
@@ -472,6 +640,7 @@
       fmtApiKey: fmtUseSameKey && canShareApiKey ? '' : fmtApiKey,
       fmtModel,
       fmtStyle,
+      fmtCustomPrompt,
       onboardingComplete,
       dgSmartFormat,
       dgKeywords,
@@ -531,6 +700,7 @@
     fmtApiKey;
     fmtModel;
     fmtStyle;
+    fmtCustomPrompt;
     onboardingComplete;
     dgSmartFormat;
     dgKeywords;
@@ -554,9 +724,21 @@
   });
 
   $effect(() => {
+    if (fmtProvider === 'ollama' && !ollamaModelsLoaded && !ollamaModelsLoading) {
+      void loadOllamaModels();
+    }
+  });
+
+  $effect(() => {
     if (!configReady || loading || txProvider === lastTxProvider) return;
     lastTxProvider = txProvider;
     txModel = '';
+  });
+
+  $effect(() => {
+    if (!configReady || loading || fmtProvider === lastFmtProvider) return;
+    lastFmtProvider = fmtProvider;
+    fmtModel = '';
   });
 
   // ── Close Window ──────────────────────────────────────────────────────
@@ -578,6 +760,14 @@
       await openExternal(buildUrl);
     } catch (e) {
       console.error('Failed to open build link:', e);
+    }
+  }
+
+  async function openOllamaDownload() {
+    try {
+      await openExternal('https://ollama.com/download');
+    } catch (e) {
+      console.error('Failed to open Ollama download:', e);
     }
   }
 
@@ -829,6 +1019,30 @@
     return `${txLabel} + ${fmtLabel}`;
   }
 
+  function hasHistoryDetails(entry: HistoryEntry): boolean {
+    return Boolean(
+      entry.rawText ||
+      entry.formattedText ||
+      entry.transcriptionModel ||
+      entry.formattingModel ||
+      entry.formattingInstruction
+    );
+  }
+
+  function historyModelLabel(entry: HistoryEntry): string | null {
+    const models = [
+      entry.transcriptionModel ? `Transcription: ${entry.transcriptionModel}` : null,
+      entry.formattingModel ? `Formatting: ${entry.formattingModel}` : null,
+    ].filter(Boolean);
+
+    return models.length ? models.join(' · ') : null;
+  }
+
+  function historyInstructionLabel(entry: HistoryEntry): string {
+    if (entry.formattingStyle === 'custom') return 'Custom instruction';
+    return 'Formatter instruction';
+  }
+
   function relativeTime(isoString: string): string {
     const now = Date.now();
     const then = new Date(isoString).getTime();
@@ -892,6 +1106,29 @@
       void invokeRuntimeOptional('history_menu.refresh');
     } catch (e) {
       console.error('Failed to clear history:', e);
+    }
+  }
+
+  async function cleanCache() {
+    const confirmed = await confirmAction(
+      'Clean local cache? This deletes Yap\'s temporary recording and debug log. It does not delete transcription history or downloaded models.',
+      'Clean'
+    );
+    if (!confirmed || !hasNativeRuntime || cacheCleaning) return;
+
+    cacheCleaning = true;
+    try {
+      const result = await invokeRuntime<{ removed: string[]; missing: string[] }>('cache.clear');
+      if (result.removed.length > 0) {
+        cacheMessage = `Removed ${result.removed.join(' and ')}.`;
+      } else {
+        cacheMessage = 'No temporary recording or debug log was found.';
+      }
+    } catch (e) {
+      cacheMessage = e instanceof Error ? e.message : 'Failed to clean cache.';
+      console.error('Failed to clean cache:', e);
+    } finally {
+      cacheCleaning = false;
     }
   }
 
@@ -1051,6 +1288,7 @@
     fmtApiKey = '';
     fmtModel = '';
     fmtStyle = 'casual';
+    fmtCustomPrompt = '';
     onboardingComplete = false;
     dgSmartFormat = true;
     dgKeywords = '';
@@ -1083,6 +1321,7 @@
   let unlistenShowUpdates: (() => void) | undefined;
   let unlistenHistoryCleared: (() => void) | undefined;
   let unlistenWhisperDownload: (() => void) | undefined;
+  let unlistenOllamaDownload: (() => void) | undefined;
 
   if (hasNativeRuntime) {
     onRuntimeFocusChanged((focused) => {
@@ -1091,6 +1330,10 @@
         if (txProvider === 'localwhisper') {
           whisperModelsLoaded = false;
           void loadWhisperModels();
+        }
+        if (fmtProvider === 'ollama') {
+          ollamaModelsLoaded = false;
+          void loadOllamaModels();
         }
         if (activeSection === 'history' || historyLoadStarted) {
           void loadHistory();
@@ -1175,6 +1418,24 @@
       .then((fn) => {
         unlistenWhisperDownload = fn;
       });
+
+    listenRuntimeEvent<OllamaDownloadEvent>('models:ollama-download', (payload) => {
+      ollamaDownloadEvent = payload;
+      if (payload.status === 'finished') {
+        if (fmtProvider === 'ollama' && pendingOllamaUseAfterDownload === payload.id) {
+          fmtModel = payload.id;
+        }
+        pendingOllamaUseAfterDownload = null;
+        ollamaModelsLoaded = false;
+        void loadOllamaModels();
+      } else if (payload.status === 'error') {
+        ollamaModelsError = payload.error ?? 'Ollama model download failed.';
+        pendingOllamaUseAfterDownload = null;
+      }
+    })
+      .then((fn) => {
+        unlistenOllamaDownload = fn;
+      });
   }
 
   onDestroy(() => {
@@ -1186,6 +1447,7 @@
     unlistenShowUpdates?.();
     unlistenHistoryCleared?.();
     unlistenWhisperDownload?.();
+    unlistenOllamaDownload?.();
     if (saveTimer) clearTimeout(saveTimer);
     for (const timeout of copyTimeouts.values()) {
       clearTimeout(timeout);
@@ -1758,7 +2020,7 @@
                 <span class="field-label">Provider</span>
                 <div class="select-wrapper">
                   <select class="select" bind:value={fmtProvider}>
-                    {#each fmtProviders as p}
+                    {#each fmtProviderOptions as p}
                       <option value={p.value}>{p.label}</option>
                     {/each}
                   </select>
@@ -1776,60 +2038,291 @@
               {#if hasFmtProvider}
                 <div class="field-divider"></div>
 
-                <div class="field-row">
-                  <span class="field-label">API Key</span>
-                  <div class="password-wrapper">
+                {#if fmtProviderRequiresApiKey}
+                  <div class="field-row">
+                    <span class="field-label">API Key</span>
+                    <div class="password-wrapper">
+                      <input
+                        class="input"
+                        type={showFmtApiKey ? 'text' : 'password'}
+                        placeholder="Required"
+                        value={effectiveFmtApiKey}
+                        oninput={(e: Event) => { fmtApiKey = (e.target as HTMLInputElement).value; }}
+                        disabled={fmtUseSameKey && canShareApiKey}
+                        autocomplete="off"
+                      />
+                      <button
+                        class="password-toggle"
+                        onclick={() => { showFmtApiKey = !showFmtApiKey; }}
+                        aria-label={showFmtApiKey ? 'Hide API key' : 'Show API key'}
+                        type="button"
+                      >
+                        {#if showFmtApiKey}
+                          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5Z"/>
+                            <circle cx="8" cy="8" r="2"/>
+                          </svg>
+                        {:else}
+                          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5Z"/>
+                            <circle cx="8" cy="8" r="2"/>
+                            <line x1="2" y1="14" x2="14" y2="2"/>
+                          </svg>
+                        {/if}
+                      </button>
+                    </div>
+                    {#if canShareApiKey}
+                      <label class="checkbox-row">
+                        <input type="checkbox" bind:checked={fmtUseSameKey} />
+                        <span class="checkbox-label">Use same API key as transcription</span>
+                      </label>
+                    {/if}
+                  </div>
+
+                  <div class="field-row">
+                    <span class="field-label">Model</span>
                     <input
                       class="input"
-                      type={showFmtApiKey ? 'text' : 'password'}
-                      placeholder="Required"
-                      value={effectiveFmtApiKey}
-                      oninput={(e: Event) => { fmtApiKey = (e.target as HTMLInputElement).value; }}
-                      disabled={fmtUseSameKey && canShareApiKey}
-                      autocomplete="off"
+                      type="text"
+                      placeholder={fmtDefaultModels[fmtProvider] ?? ''}
+                      bind:value={fmtModel}
                     />
-                    <button
-                      class="password-toggle"
-                      onclick={() => { showFmtApiKey = !showFmtApiKey; }}
-                      aria-label={showFmtApiKey ? 'Hide API key' : 'Show API key'}
-                      type="button"
-                    >
-                      {#if showFmtApiKey}
-                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                          <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5Z"/>
-                          <circle cx="8" cy="8" r="2"/>
-                        </svg>
-                      {:else}
-                        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                          <path d="M1 8s2.5-5 7-5 7 5 7 5-2.5 5-7 5-7-5-7-5Z"/>
-                          <circle cx="8" cy="8" r="2"/>
-                          <line x1="2" y1="14" x2="14" y2="2"/>
-                        </svg>
-                      {/if}
-                    </button>
+                    <span class="field-description">
+                      Override the default model, or leave empty to use {fmtDefaultModels[fmtProvider] ?? 'none'}.
+                    </span>
                   </div>
-                  {#if canShareApiKey}
-                    <label class="checkbox-row">
-                      <input type="checkbox" bind:checked={fmtUseSameKey} />
-                      <span class="checkbox-label">Use same API key as transcription</span>
-                    </label>
-                  {/if}
-                </div>
 
-                <div class="field-row">
-                  <span class="field-label">Model</span>
-                  <input
-                    class="input"
-                    type="text"
-                    placeholder={fmtDefaultModels[fmtProvider] ?? ''}
-                    bind:value={fmtModel}
-                  />
-                  <span class="field-description">
-                    Override the default model, or leave empty to use {fmtDefaultModels[fmtProvider] ?? 'none'}.
-                  </span>
-                </div>
+                  <div class="field-divider"></div>
+                {/if}
 
-                <div class="field-divider"></div>
+                {#if fmtProvider === 'ollama'}
+                  <div class="field-row">
+                    <div class="local-models-header">
+                      <div class="field-copy">
+                        <span class="field-label">Ollama Models</span>
+                        <span class="field-description">
+                          Models are pulled into your local Ollama installation.
+                        </span>
+                      </div>
+                      <button class="btn" type="button" onclick={loadOllamaModels}>Refresh</button>
+                    </div>
+
+                    {#if ollamaModelList && !ollamaModelList.serviceAvailable}
+                      <div class="model-setup-state">
+                        <div class="field-copy">
+                          <span class="model-setup-title">Ollama is not running</span>
+                          <span class="field-description">
+                            Install Ollama, open it, then refresh to enable local model downloads.
+                          </span>
+                        </div>
+                        <div class="model-actions">
+                          <button class="btn btn-primary" type="button" onclick={openOllamaDownload}>
+                            Install Ollama
+                          </button>
+                          <button class="btn" type="button" onclick={loadOllamaModels}>
+                            Refresh
+                          </button>
+                        </div>
+                      </div>
+                    {/if}
+
+                    {#if recommendedOllamaMissing && recommendedOllamaModel}
+                      <div class="model-setup-state">
+                        <div class="field-copy">
+                          <span class="model-setup-title">Recommended model missing</span>
+                          <span class="field-description">
+                            Download {recommendedOllamaModel.name} before using Ollama formatting.
+                          </span>
+                        </div>
+                        <button
+                          class="btn btn-primary"
+                          type="button"
+                          aria-label={`Download recommended model ${recommendedOllamaModel.name}`}
+                          disabled={isAnyOllamaDownloadActive()}
+                          onclick={() => pullOllamaModel(recommendedOllamaModel)}
+                        >
+                          {isDownloadingOllamaModel(recommendedOllamaModel) ? 'Downloading' : 'Download recommended model'}
+                        </button>
+                      </div>
+                    {/if}
+
+                    {#if ollamaModelsLoading && !ollamaModelList}
+                      <div class="history-empty-state">
+                        <span>Loading models...</span>
+                      </div>
+                    {:else if ollamaModelList}
+                      <div class="model-list">
+                        {#each ollamaModelList.models as model}
+                          <div class="model-row" class:selected={isSelectedOllamaModel(model)}>
+                            <div class="model-main">
+                              <div class="model-title-row">
+                                <span class="model-name">{model.name}</span>
+                                {#if model.installed}
+                                  <span class="model-status installed">Installed</span>
+                                {:else}
+                                  <span class="model-status">Not installed</span>
+                                {/if}
+                              </div>
+                              <span class="field-description">{ollamaModelMeta(model) || model.id}</span>
+                              {#if isDownloadingOllamaModel(model)}
+                                <div
+                                  class="model-progress"
+                                  role="progressbar"
+                                  aria-label={`Download progress for ${model.name}`}
+                                  aria-valuemin="0"
+                                  aria-valuemax="100"
+                                  aria-valuenow={ollamaDownloadProgress(model)}
+                                >
+                                  <div class="model-progress-header">
+                                    <span>{ollamaDownloadLabel(model)}</span>
+                                    <span>{ollamaDownloadProgress(model)}%</span>
+                                  </div>
+                                  <div class="update-progress-track">
+                                    <div class="update-progress-fill" style={`width: ${ollamaDownloadProgress(model)}%`}></div>
+                                  </div>
+                                </div>
+                              {/if}
+                            </div>
+                            <div class="model-actions">
+                              {#if model.installed}
+                                <button
+                                  class="btn"
+                                  class:btn-primary={isSelectedOllamaModel(model)}
+                                  type="button"
+                                  aria-label={`Use model ${model.name}`}
+                                  onclick={() => useOllamaModel(model)}
+                                  disabled={isSelectedOllamaModel(model)}
+                                >
+                                  {isSelectedOllamaModel(model) ? 'Using' : 'Use'}
+                                </button>
+                                <button
+                                  class="btn btn-danger"
+                                  type="button"
+                                  aria-label={`Delete model ${model.name}`}
+                                  onclick={() => deleteOllamaModel(model)}
+                                >
+                                  Delete
+                                </button>
+                              {:else}
+                                <button
+                                  class="btn"
+                                  type="button"
+                                  aria-label={`Download model ${model.name}`}
+                                  disabled={!ollamaModelList.serviceAvailable || isAnyOllamaDownloadActive()}
+                                  onclick={() => pullOllamaModel(model)}
+                                >
+                                  {isDownloadingOllamaModel(model) ? 'Downloading' : 'Download'}
+                                </button>
+                              {/if}
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+
+                    {#if ollamaModelsError}
+                      <span class="field-description update-error">{ollamaModelsError}</span>
+                    {/if}
+                  </div>
+
+                  <div class="field-row">
+                    <span class="field-label">Search Ollama Library</span>
+                    <div class="model-search-row">
+                      <input
+                        class="input"
+                        type="text"
+                        placeholder="Search or enter a model name, e.g. gemma3:4b"
+                        bind:value={ollamaSearchQuery}
+                        onkeydown={(event) => {
+                          if (event.key === 'Enter') void searchOllamaModels();
+                        }}
+                      />
+                      <button
+                        class="btn"
+                        type="button"
+                        disabled={ollamaSearchLoading || ollamaSearchQuery.trim().length < 2}
+                        onclick={searchOllamaModels}
+                      >
+                        {ollamaSearchLoading ? 'Searching' : 'Search'}
+                      </button>
+                    </div>
+                    {#if ollamaSearchError}
+                      <span class="field-description update-error">{ollamaSearchError}</span>
+                    {/if}
+                    {#if ollamaSearchResults.length > 0}
+                      <div class="model-list compact">
+                        {#each ollamaSearchResults as model}
+                          <div class="model-row">
+                            <div class="model-main">
+                              <div class="model-title-row">
+                                <span class="model-name">{model.name}</span>
+                                <span class="model-status">{model.source === 'library' ? 'Ollama Library' : 'Suggested'}</span>
+                              </div>
+                              <span class="field-description">{ollamaModelMeta(model) || model.id}</span>
+                              {#if isDownloadingOllamaModel(model)}
+                                <div
+                                  class="model-progress"
+                                  role="progressbar"
+                                  aria-label={`Download progress for ${model.name}`}
+                                  aria-valuemin="0"
+                                  aria-valuemax="100"
+                                  aria-valuenow={ollamaDownloadProgress(model)}
+                                >
+                                  <div class="model-progress-header">
+                                    <span>{ollamaDownloadLabel(model)}</span>
+                                    <span>{ollamaDownloadProgress(model)}%</span>
+                                  </div>
+                                  <div class="update-progress-track">
+                                    <div class="update-progress-fill" style={`width: ${ollamaDownloadProgress(model)}%`}></div>
+                                  </div>
+                                </div>
+                              {/if}
+                            </div>
+                            <div class="model-actions">
+                              {#if model.installed}
+                                <button
+                                  class="btn"
+                                  class:btn-primary={isSelectedOllamaModel(model)}
+                                  type="button"
+                                  aria-label={`Use model ${model.name}`}
+                                  onclick={() => useOllamaModel(model)}
+                                  disabled={isSelectedOllamaModel(model)}
+                                >
+                                  {isSelectedOllamaModel(model) ? 'Using' : 'Use'}
+                                </button>
+                              {:else}
+                                <button
+                                  class="btn"
+                                  type="button"
+                                  aria-label={`Download model ${model.name}`}
+                                  disabled={!ollamaModelList?.serviceAvailable || isAnyOllamaDownloadActive()}
+                                  onclick={() => pullOllamaModel(model)}
+                                >
+                                  {isDownloadingOllamaModel(model) ? 'Downloading' : 'Download'}
+                                </button>
+                              {/if}
+                            </div>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                  </div>
+
+                  <div class="field-row">
+                    <span class="field-label">Manual model name</span>
+                    <input
+                      class="input"
+                      type="text"
+                      placeholder={selectedOllamaModel?.id ?? fmtDefaultModels.ollama}
+                      bind:value={fmtModel}
+                    />
+                    <span class="field-description">
+                      Leave empty to use {fmtDefaultModels.ollama}, choose a downloaded model above, or enter any Ollama model name.
+                    </span>
+                  </div>
+
+                  <div class="field-divider"></div>
+                {/if}
 
                 <div class="field-row">
                   <span class="field-label">Style</span>
@@ -1850,22 +2343,39 @@
                   </div>
                 </div>
 
-                <div class="style-preview">
-                  <div class="style-preview-header">
-                    <div class="style-preview-title">{currentStyleData.label}</div>
-                    <div class="style-preview-desc">{currentStyleData.description}</div>
+                {#if fmtStyle === 'custom'}
+                  <div class="field-row">
+                    <span class="field-label">Custom instructions</span>
+                    <textarea
+                      class="input textarea"
+                      placeholder="e.g. Make the result concise and use bullet points when useful."
+                      bind:value={fmtCustomPrompt}
+                      rows="4"
+                    ></textarea>
+                    <span class="field-description">
+                      Used as the primary formatting instruction.
+                    </span>
                   </div>
-                  <div class="style-preview-body">
-                    <div class="style-preview-col">
-                      <div class="style-preview-label before">Before</div>
-                      <div class="style-preview-text">{styleExampleInput}</div>
+                {/if}
+
+                {#if fmtStyle !== 'custom'}
+                  <div class="style-preview">
+                    <div class="style-preview-header">
+                      <div class="style-preview-title">{currentStyleData.label}</div>
+                      <div class="style-preview-desc">{currentStyleData.description}</div>
                     </div>
-                    <div class="style-preview-col">
-                      <div class="style-preview-label after">After</div>
-                      <div class="style-preview-text">{currentStyleData.example}</div>
+                    <div class="style-preview-body">
+                      <div class="style-preview-col">
+                        <div class="style-preview-label before">Before</div>
+                        <div class="style-preview-text">{styleExampleInput}</div>
+                      </div>
+                      <div class="style-preview-col">
+                        <div class="style-preview-label after">After</div>
+                        <div class="style-preview-text">{currentStyleData.example}</div>
+                      </div>
                     </div>
                   </div>
-                </div>
+                {/if}
               {/if}
             </div>
           </section>
@@ -1932,7 +2442,35 @@
                           {#if entry.formattingStyle && entry.formattingStyle !== 'none'}
                             <span class="history-badge">{entry.formattingStyle}</span>
                           {/if}
+                          {#if historyModelLabel(entry)}
+                            <span class="history-badge">{historyModelLabel(entry)}</span>
+                          {/if}
                         </div>
+                        {#if hasHistoryDetails(entry)}
+                          <details class="history-details">
+                            <summary>Details</summary>
+                            <div class="history-detail-grid">
+                              {#if entry.rawText}
+                                <div class="history-detail-block">
+                                  <span class="history-detail-label">Raw</span>
+                                  <pre>{entry.rawText}</pre>
+                                </div>
+                              {/if}
+                              {#if entry.formattedText}
+                                <div class="history-detail-block">
+                                  <span class="history-detail-label">Formatted</span>
+                                  <pre>{entry.formattedText}</pre>
+                                </div>
+                              {/if}
+                              {#if entry.formattingInstruction}
+                                <div class="history-detail-block">
+                                  <span class="history-detail-label">{historyInstructionLabel(entry)}</span>
+                                  <pre>{entry.formattingInstruction}</pre>
+                                </div>
+                              {/if}
+                            </div>
+                          </details>
+                        {/if}
                       </div>
                       <div class="history-entry-actions">
                         <button
@@ -2017,6 +2555,18 @@
                   Yap did not install anything.
                 </div>
               {/if}
+
+              <div class="field-divider"></div>
+
+              <div class="action-row">
+                <div class="field-copy">
+                  <span class="field-label">Local cache</span>
+                  <span class="field-description">{cacheMessage}</span>
+                </div>
+                <button class="btn btn-secondary" onclick={cleanCache} type="button" disabled={cacheCleaning}>
+                  {cacheCleaning ? 'Cleaning...' : 'Clean Cache'}
+                </button>
+              </div>
 
               <div class="field-divider"></div>
 

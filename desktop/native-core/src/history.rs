@@ -19,12 +19,40 @@ pub struct HistoryEntry {
     pub timestamp: DateTime<Utc>,
     /// The transcribed (and optionally formatted) text.
     pub text: String,
+    /// The raw transcription before formatting, when available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_text: Option<String>,
+    /// The formatter output that produced `text`, when formatting was enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatted_text: Option<String>,
     /// Which transcription provider produced the text.
     pub transcription_provider: String,
+    /// Which transcription model was used, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transcription_model: Option<String>,
     /// Which formatting provider was used, if any.
     pub formatting_provider: Option<String>,
+    /// Which formatting model was used, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatting_model: Option<String>,
     /// Which formatting style was used, if any.
     pub formatting_style: Option<String>,
+    /// The resolved formatting instruction/prompt, if formatting was enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formatting_instruction: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct HistoryAppend {
+    pub text: String,
+    pub raw_text: Option<String>,
+    pub formatted_text: Option<String>,
+    pub transcription_provider: String,
+    pub transcription_model: Option<String>,
+    pub formatting_provider: Option<String>,
+    pub formatting_model: Option<String>,
+    pub formatting_style: Option<String>,
+    pub formatting_instruction: Option<String>,
 }
 
 // ---- File path ------------------------------------------------------------
@@ -60,32 +88,37 @@ pub fn load() -> Vec<HistoryEntry> {
 /// `MAX_ENTRIES`, the oldest entries are dropped.
 ///
 /// This is a no-op when `historyEnabled` is `false` in config.
-pub fn append(
-    text: String,
-    transcription_provider: String,
-    formatting_provider: Option<String>,
-    formatting_style: Option<String>,
-) -> Result<HistoryEntry, String> {
+pub fn append(input: HistoryAppend) -> Result<HistoryEntry, String> {
     let cfg = config::get();
     if !cfg.history_enabled {
         // Still return the entry object, just don't persist.
         return Ok(HistoryEntry {
             id: Uuid::new_v4().to_string(),
             timestamp: Utc::now(),
-            text,
-            transcription_provider,
-            formatting_provider,
-            formatting_style,
+            text: input.text,
+            raw_text: input.raw_text,
+            formatted_text: input.formatted_text,
+            transcription_provider: input.transcription_provider,
+            transcription_model: input.transcription_model,
+            formatting_provider: input.formatting_provider,
+            formatting_model: input.formatting_model,
+            formatting_style: input.formatting_style,
+            formatting_instruction: input.formatting_instruction,
         });
     }
 
     let entry = HistoryEntry {
         id: Uuid::new_v4().to_string(),
         timestamp: Utc::now(),
-        text,
-        transcription_provider,
-        formatting_provider,
-        formatting_style,
+        text: input.text,
+        raw_text: input.raw_text,
+        formatted_text: input.formatted_text,
+        transcription_provider: input.transcription_provider,
+        transcription_model: input.transcription_model,
+        formatting_provider: input.formatting_provider,
+        formatting_model: input.formatting_model,
+        formatting_style: input.formatting_style,
+        formatting_instruction: input.formatting_instruction,
     };
 
     let mut entries = load();
@@ -127,4 +160,26 @@ fn save_entries(entries: &[HistoryEntry]) -> Result<(), String> {
         .map_err(|e| format!("failed to serialize history: {e}"))?;
     fs::write(&path, json).map_err(|e| format!("failed to write history: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_history_entries_remain_readable() {
+        let entry: HistoryEntry = serde_json::from_str(
+            r#"{
+            "id":"old-entry", "timestamp":"2026-07-01T12:00:00Z", "text":"Existing dictation",
+            "transcriptionProvider":"openai", "formattingProvider":null, "formattingStyle":null
+        }"#,
+        )
+        .unwrap();
+        assert_eq!(entry.text, "Existing dictation");
+        assert!(entry.raw_text.is_none());
+        assert!(entry.formatted_text.is_none());
+        assert!(entry.formatting_instruction.is_none());
+        let saved = serde_json::to_value(entry).unwrap();
+        assert!(saved.get("rawText").is_none());
+    }
 }
