@@ -41,6 +41,11 @@ let package = Package(
                 .linkedFramework("Foundation"),
                 .linkedFramework("FoundationModels"),
             ]
+        ),
+        .testTarget(
+            name: "yap-format-tests",
+            dependencies: ["yap-format"],
+            path: "FormatTests"
         )
     ]
 )

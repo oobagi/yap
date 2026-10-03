@@ -7,7 +7,6 @@ use reqwest::Url;
 const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 const OLLAMA_LIBRARY_SEARCH_URL: &str = "https://ollama.com/search";
 const OLLAMA_LIBRARY_API_URL: &str = "https://ollamadb.dev/api/v1/models";
-const RECOMMENDED_OLLAMA_MODEL_ID: &str = "qwen3.5:4b";
 const OLLAMA_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const OLLAMA_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const OLLAMA_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
@@ -17,7 +16,6 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(350);
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OllamaModelList {
-    pub recommended_id: String,
     pub service_available: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_error: Option<String>,
@@ -35,16 +33,15 @@ pub struct OllamaModelSummary {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed_hint: Option<String>,
+    pub library_info: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub quality_hint: Option<String>,
+    pub details: Option<String>,
     pub installed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OllamaModelSource {
-    Curated,
     Library,
     Installed,
 }
@@ -204,19 +201,17 @@ pub fn list_ollama_models() -> Result<OllamaModelList, String> {
         Ok(models) => models,
         Err(error) => {
             return Ok(OllamaModelList {
-                recommended_id: RECOMMENDED_OLLAMA_MODEL_ID.to_string(),
                 service_available: false,
                 service_error: Some(error),
-                models: curated_models(),
+                models: Vec::new(),
             });
         }
     };
 
     Ok(OllamaModelList {
-        recommended_id: RECOMMENDED_OLLAMA_MODEL_ID.to_string(),
         service_available: true,
         service_error: None,
-        models: merge_models(curated_models(), installed),
+        models: installed,
     })
 }
 
@@ -229,36 +224,87 @@ pub fn search_ollama_models(
     }
 
     let installed = run_async(fetch_installed_models()).unwrap_or_default();
-    let mut results = curated_models()
+    let results = if is_valid_model_id(query) && (query.contains(':') || query.contains('/')) {
+        // The library search does not find exact tags. Verify their manifests instead
+        // of assuming that a syntactically valid model name exists.
+        run_async(lookup_ollama_model(
+            query,
+            ollama_model_manifest_url(query)?,
+        ))?
         .into_iter()
-        .filter(|model| model_matches_query(model, query))
-        .collect::<Vec<_>>();
-
-    let remote_models = run_async(search_ollama_library_page(query)).unwrap_or_default();
-    let remote_models = if remote_models.is_empty() {
-        run_async(search_ollama_library_api(query)).unwrap_or_default()
+        .collect()
     } else {
-        remote_models
+        match run_async(search_ollama_library_page(query)) {
+            Ok(models) => models,
+            Err(_) => run_async(search_ollama_library_api(query))?,
+        }
     };
-    append_unique_models(&mut results, remote_models);
 
-    if is_valid_model_id(query) && !results.iter().any(|model| same_model(&model.id, query)) {
-        results.insert(
-            0,
-            OllamaModelSummary {
-                id: query.to_string(),
-                name: model_name(query),
-                source: OllamaModelSource::Library,
-                size_bytes: None,
-                size_label: None,
-                speed_hint: None,
-                quality_hint: Some("Ollama library model".to_string()),
-                installed: false,
-            },
-        );
+    Ok(merge_models(
+        results,
+        installed
+            .into_iter()
+            .filter(|model| model_matches_query(model, query))
+            .collect(),
+    ))
+}
+
+fn ollama_model_manifest_url(id: &str) -> Result<Url, String> {
+    let id = sanitize_model_id(id)?;
+    let (name, tag) = id.rsplit_once(':').unwrap_or((&id, "latest"));
+    let mut url = Url::parse("https://registry.ollama.ai/v2").unwrap();
+    let mut path = url.path_segments_mut().unwrap();
+    if !name.contains('/') {
+        path.push("library");
+    }
+    path.extend(name.split('/')).push("manifests").push(tag);
+    drop(path);
+    Ok(url)
+}
+
+async fn lookup_ollama_model(id: &str, url: Url) -> Result<Option<OllamaModelSummary>, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(OLLAMA_CONNECT_TIMEOUT)
+        .timeout(OLLAMA_SEARCH_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("failed to create Ollama library client: {e}"))?;
+    let response = client
+        .get(url)
+        .header("User-Agent", "Yap Ollama model search")
+        .send()
+        .await
+        .map_err(|e| format!("Could not verify Ollama model: {e}"))?;
+    let status = response.status();
+
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if !status.is_success() {
+        return Err(format!("Could not verify Ollama model (HTTP {status})"));
+    }
+    let manifest = response
+        .json::<serde_json::Value>()
+        .await
+        .map_err(|e| format!("Could not read Ollama model manifest: {e}"))?;
+    if !manifest["layers"].as_array().is_some_and(|layers| {
+        layers
+            .iter()
+            .any(|layer| layer["mediaType"] == "application/vnd.ollama.image.model")
+    }) {
+        return Err("Ollama registry returned an invalid model manifest".to_string());
     }
 
-    Ok(merge_models(results, installed))
+    Ok(Some(OllamaModelSummary {
+        id: id.to_string(),
+        name: model_name(id),
+        source: OllamaModelSource::Library,
+        size_bytes: None,
+        size_label: None,
+        library_info: None,
+        details: None,
+        installed: false,
+    }))
 }
 
 async fn search_ollama_library_page(query: &str) -> Result<Vec<OllamaModelSummary>, String> {
@@ -474,7 +520,7 @@ fn installed_model_summary(model: OllamaTagModel) -> Option<OllamaModelSummary> 
         return None;
     }
 
-    let quality_hint = model.details.as_ref().map(|details| {
+    let details = model.details.as_ref().map(|details| {
         [
             details.parameter_size.as_deref(),
             details.quantization_level.as_deref(),
@@ -491,8 +537,8 @@ fn installed_model_summary(model: OllamaTagModel) -> Option<OllamaModelSummary> 
         source: OllamaModelSource::Installed,
         size_bytes: model.size,
         size_label: model.size.map(format_size),
-        speed_hint: None,
-        quality_hint: quality_hint.filter(|hint| !hint.is_empty()),
+        library_info: None,
+        details: details.filter(|hint| !hint.is_empty()),
         installed: true,
     })
 }
@@ -560,8 +606,8 @@ fn library_model_summary(model: OllamaLibraryModel) -> Option<OllamaModelSummary
         source: OllamaModelSource::Library,
         size_bytes: None,
         size_label: None,
-        speed_hint: join_nonempty(meta),
-        quality_hint: join_nonempty(descriptors),
+        library_info: join_nonempty(meta),
+        details: join_nonempty(descriptors),
         installed: false,
     })
 }
@@ -588,7 +634,10 @@ fn library_model_id(model: &OllamaLibraryModel) -> Option<String> {
 
 fn parse_ollama_search_html(html: &str) -> Vec<OllamaModelSummary> {
     let mut models = Vec::new();
-    for block in html.split("<li x-test-model").skip(1) {
+    // Ollama's public page does not always include its x-test attributes.
+    // Read each list item using its library link; optional markers enrich it.
+    for block in html.split("<li ").skip(1) {
+        let block = block.split("</li>").next().unwrap_or(block);
         let Some(id) = extract_library_href(block) else {
             continue;
         };
@@ -647,8 +696,8 @@ fn parse_ollama_search_html(html: &str) -> Vec<OllamaModelSummary> {
                 source: OllamaModelSource::Library,
                 size_bytes: None,
                 size_label: None,
-                speed_hint: join_nonempty(meta),
-                quality_hint: join_nonempty(descriptors),
+                library_info: join_nonempty(meta),
+                details: join_nonempty(descriptors),
                 installed: false,
             }],
         );
@@ -724,34 +773,6 @@ fn decode_html_text(value: &str) -> String {
         .to_string()
 }
 
-fn curated_models() -> Vec<OllamaModelSummary> {
-    vec![
-        curated_model("qwen3.5:4b", "Qwen 3.5 4B", "Fast", "Recommended"),
-        curated_model("gemma3:4b", "Gemma 3 4B", "Fast", "Strong multilingual"),
-        curated_model("llama3.2:3b", "Llama 3.2 3B", "Fastest", "Small"),
-        curated_model("qwen3:8b", "Qwen 3 8B", "Balanced", "Higher quality"),
-        curated_model(
-            "mistral-small3.2:24b",
-            "Mistral Small 3.2 24B",
-            "Slower",
-            "Best local quality",
-        ),
-    ]
-}
-
-fn curated_model(id: &str, name: &str, speed_hint: &str, quality_hint: &str) -> OllamaModelSummary {
-    OllamaModelSummary {
-        id: id.to_string(),
-        name: name.to_string(),
-        source: OllamaModelSource::Curated,
-        size_bytes: None,
-        size_label: None,
-        speed_hint: Some(speed_hint.to_string()),
-        quality_hint: Some(quality_hint.to_string()),
-        installed: false,
-    }
-}
-
 fn merge_models(
     mut models: Vec<OllamaModelSummary>,
     installed: Vec<OllamaModelSummary>,
@@ -764,8 +785,8 @@ fn merge_models(
             model.installed = true;
             model.size_bytes = installed_model.size_bytes;
             model.size_label = installed_model.size_label;
-            if installed_model.quality_hint.is_some() {
-                model.quality_hint = installed_model.quality_hint;
+            if installed_model.details.is_some() {
+                model.details = installed_model.details;
             }
             continue;
         }
@@ -799,8 +820,8 @@ fn model_matches_query(model: &OllamaModelSummary, query: &str) -> bool {
     [
         model.id.as_str(),
         model.name.as_str(),
-        model.speed_hint.as_deref().unwrap_or_default(),
-        model.quality_hint.as_deref().unwrap_or_default(),
+        model.library_info.as_deref().unwrap_or_default(),
+        model.details.as_deref().unwrap_or_default(),
     ]
     .iter()
     .any(|value| value.to_lowercase().contains(&query))
@@ -978,8 +999,73 @@ mod tests {
     }
 
     #[test]
-    fn latest_tag_matches_untagged_curated_id() {
+    fn latest_tag_matches_untagged_id() {
         assert!(same_model("gemma3", "gemma3:latest"));
+    }
+
+    #[test]
+    fn exact_model_manifests_preserve_tags_and_namespaces() {
+        assert_eq!(
+            ollama_model_manifest_url("qwen3.5:9b").unwrap().as_str(),
+            "https://registry.ollama.ai/v2/library/qwen3.5/manifests/9b"
+        );
+        assert_eq!(
+            ollama_model_manifest_url("someone/model:tag")
+                .unwrap()
+                .as_str(),
+            "https://registry.ollama.ai/v2/someone/model/manifests/tag"
+        );
+        assert_eq!(
+            ollama_model_manifest_url("someone/model").unwrap().as_str(),
+            "https://registry.ollama.ai/v2/someone/model/manifests/latest"
+        );
+    }
+
+    #[tokio::test]
+    async fn exact_model_search_requires_a_confirmed_manifest() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        for (status, body) in [
+            (
+                "200 OK",
+                r#"{"layers":[{"mediaType":"application/vnd.ollama.image.model"}]}"#,
+            ),
+            ("200 OK", "{}"),
+            ("404 Not Found", ""),
+            ("503 Service Unavailable", ""),
+            ("302 Found", ""),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = Url::parse(&format!(
+                "http://{}/library/example:tag",
+                listener.local_addr().unwrap()
+            ))
+            .unwrap();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 4096];
+                let count = socket.read(&mut request).await.unwrap();
+                assert!(std::str::from_utf8(&request[..count])
+                    .unwrap()
+                    .starts_with("GET /library/example:tag HTTP/1.1"));
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+            });
+            let result = lookup_ollama_model("example:tag", url).await;
+            server.await.unwrap();
+            match status {
+                "200 OK" if body != "{}" => assert_eq!(result.unwrap().unwrap().id, "example:tag"),
+                "404 Not Found" => assert!(result.unwrap().is_none()),
+                _ => assert!(result.is_err()),
+            }
+        }
     }
 
     #[test]
@@ -1001,10 +1087,10 @@ mod tests {
         assert_eq!(summary.id, "someone/model");
         assert_eq!(summary.source, OllamaModelSource::Library);
         assert_eq!(
-            summary.speed_hint.unwrap(),
+            summary.library_info.unwrap(),
             "12.4K pulls, 3 tags, updated 2 days ago"
         );
-        assert_eq!(summary.quality_hint.unwrap(), "7B, Q4, Tools, Community");
+        assert_eq!(summary.details.unwrap(), "7B, Q4, Tools, Community");
     }
 
     #[test]
@@ -1036,7 +1122,7 @@ mod tests {
         assert_eq!(summary.id, "llama3.2");
         assert_eq!(summary.name, "llama3.2");
         assert_eq!(
-            summary.speed_hint.unwrap(),
+            summary.library_info.unwrap(),
             "6.3M pulls, 68 tags, updated 4 months ago"
         );
     }
@@ -1065,12 +1151,35 @@ mod tests {
         assert_eq!(models[0].id, "gemma4");
         assert_eq!(models[0].name, "gemma4");
         assert_eq!(
-            models[0].speed_hint.as_deref(),
+            models[0].library_info.as_deref(),
             Some("16.8M pulls, 49 tags, updated 4 days ago")
         );
         assert_eq!(
-            models[0].quality_hint.as_deref(),
+            models[0].details.as_deref(),
             Some("12b, 26b, vision, tools")
         );
+    }
+
+    #[test]
+    fn parses_public_library_search_without_test_attributes() {
+        let models = parse_ollama_search_html(
+            r#"<li class="navigation"><a href="/download">Download</a></li>
+            <li  class="flex items-baseline">
+                <a href="/library/example-model" class="group w-full">
+                    <h2><span>example-model</span></h2>
+                    <p class="max-w-lg">A model supporting text &amp; images.</p>
+                </a>
+            </li>
+            <li class="flex"><a href="/library/another-model"><p>Another model.</p></a></li>"#,
+        );
+
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "example-model");
+        assert_eq!(models[0].source, OllamaModelSource::Library);
+        assert_eq!(
+            models[0].details.as_deref(),
+            Some("A model supporting text & images.")
+        );
+        assert_eq!(models[1].id, "another-model");
     }
 }

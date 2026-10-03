@@ -104,9 +104,7 @@ fn normalize_language(language: &str) -> Option<String> {
 fn resolve_model_path(model: &str) -> Result<PathBuf, String> {
     let model = model.trim();
     if model.is_empty() {
-        return Err(
-            "Local Whisper needs a whisper.cpp GGML .bin model path in Settings.".to_string(),
-        );
+        return Err("Choose a Local Whisper model in Transcription Settings.".to_string());
     }
 
     let candidates = model_candidates(model);
@@ -264,6 +262,27 @@ fn resample_linear(samples: &[f32], source_rate: u32, target_rate: u32) -> Vec<f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn transcription_requires_an_explicit_model() {
+        use crate::transcription::{transcribe, TranscriptionOptions, TranscriptionProvider};
+
+        assert_eq!(TranscriptionProvider::LocalWhisper.default_model(), "");
+        for model in ["", "   "] {
+            let options = TranscriptionOptions {
+                model: model.into(),
+                ..Default::default()
+            };
+            let error = transcribe(
+                TranscriptionProvider::LocalWhisper,
+                Path::new("unused.wav"),
+                &options,
+            )
+            .await
+            .unwrap_err();
+            assert!(error.contains("Choose a Local Whisper model"));
+        }
+    }
 
     #[cfg(feature = "local-whisper-native")]
     #[test]

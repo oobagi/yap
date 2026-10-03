@@ -844,10 +844,14 @@ fn provider_settings_section_for_error(error: &str) -> Option<&'static str> {
     }
     if lower.contains("appleintelligencenotenabled")
         || lower.contains("foundation models formatter is unavailable")
+        || lower.contains("choose an ollama model")
     {
         return Some("formatting");
     }
-    if lower.contains("choose an api provider") || lower.contains("set up an api key") {
+    if lower.contains("choose an api provider")
+        || lower.contains("set up an api key")
+        || lower.contains("choose a local whisper model")
+    {
         return Some("transcription");
     }
     if !is_provider_settings_error(&lower) {
@@ -1404,7 +1408,7 @@ mod tests {
     #[test]
     fn unformatted_history_has_raw_text_and_default_model_without_formatter_metadata() {
         let cfg = AppConfig {
-            tx_provider: TranscriptionProvider::LocalWhisper,
+            tx_provider: TranscriptionProvider::OpenAI,
             fmt_provider: FormattingProvider::Ollama,
             ..Default::default()
         };
@@ -1413,7 +1417,7 @@ mod tests {
         assert_eq!(entry.raw_text.as_deref(), Some("Keep my words"));
         assert_eq!(
             entry.transcription_model.as_deref(),
-            Some("large-v3-turbo-q5_0")
+            Some("gpt-4o-transcribe")
         );
         assert!(entry.formatted_text.is_none());
         assert!(entry.formatting_provider.is_none());
