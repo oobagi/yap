@@ -1,8 +1,12 @@
 use crate::audio;
+use crate::cache::CacheCleanupSummary;
 use crate::config::{self, AppConfig};
 use crate::history::{self, HistoryEntry};
 use crate::model_manager::{
     self, WhisperDownloadRequest, WhisperModelList, WhisperModelSearchRequest, WhisperModelSummary,
+};
+use crate::ollama::{
+    self, OllamaModelList, OllamaModelSearchRequest, OllamaModelSummary, OllamaPullRequest,
 };
 use serde_json::Value;
 
@@ -33,6 +37,10 @@ pub fn delete_all_history() -> Result<(), String> {
     history::clear()
 }
 
+pub fn clear_runtime_cache() -> Result<CacheCleanupSummary, String> {
+    crate::dictation::clear_runtime_cache()
+}
+
 pub fn list_whisper_models() -> Result<WhisperModelList, String> {
     model_manager::list_whisper_models()
 }
@@ -58,4 +66,24 @@ pub fn delete_whisper_model(file_name: &str) -> Result<(), String> {
 
 pub fn reveal_whisper_models() -> Result<(), String> {
     model_manager::reveal_whisper_models()
+}
+
+pub fn list_ollama_models() -> Result<OllamaModelList, String> {
+    ollama::list_ollama_models()
+}
+
+pub fn search_ollama_models(
+    request: OllamaModelSearchRequest,
+) -> Result<Vec<OllamaModelSummary>, String> {
+    ollama::search_ollama_models(request)
+}
+
+pub fn pull_ollama_model(request: OllamaPullRequest, host: &dyn CommandHost) -> Result<(), String> {
+    ollama::pull_ollama_model(request, |payload| {
+        host.emit("models:ollama-download", payload);
+    })
+}
+
+pub fn delete_ollama_model(id: &str) -> Result<(), String> {
+    ollama::delete_ollama_model(id)
 }

@@ -14,6 +14,7 @@ export interface AppConfig {
   fmtApiKey: string;
   fmtModel: string;
   fmtStyle: string;
+  fmtCustomPrompt: string;
   onboardingComplete: boolean;
   dgSmartFormat: boolean;
   dgKeywords: string;
@@ -35,9 +36,14 @@ export interface HistoryEntry {
   id: string;
   timestamp: string;
   text: string;
+  rawText?: string | null;
+  formattedText?: string | null;
   transcriptionProvider: string;
+  transcriptionModel?: string | null;
   formattingProvider: string | null;
+  formattingModel?: string | null;
   formattingStyle: string | null;
+  formattingInstruction?: string | null;
 }
 
 export interface WhisperModelSummary {
@@ -70,6 +76,35 @@ export interface WhisperDownloadEvent {
   error?: string;
 }
 
+export interface OllamaModelSummary {
+  id: string;
+  name: string;
+  source: 'curated' | 'library' | 'installed';
+  sizeBytes?: number;
+  sizeLabel?: string;
+  speedHint?: string;
+  qualityHint?: string;
+  installed: boolean;
+}
+
+export interface OllamaModelList {
+  recommendedId: string;
+  serviceAvailable: boolean;
+  serviceError?: string;
+  models: OllamaModelSummary[];
+}
+
+export interface OllamaDownloadEvent {
+  id: string;
+  model: string;
+  status: 'started' | 'progress' | 'finished' | 'error';
+  message?: string;
+  transferred?: number;
+  total?: number;
+  percent?: number;
+  error?: string;
+}
+
 interface ProviderOption {
   value: string;
   label: string;
@@ -91,13 +126,21 @@ export function transcriptionProviderRequiresApiKey(provider: string): boolean {
   return ['gemini', 'openai', 'deepgram', 'elevenlabs'].includes(provider);
 }
 
-export const fmtProviders: ProviderOption[] = [
-  { value: 'none', label: 'None' },
-  { value: 'gemini', label: 'Gemini' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'groq', label: 'Groq' },
-];
+export function formattingProviders(isMac: boolean): ProviderOption[] {
+  return [
+    { value: 'none', label: 'None' },
+    ...(isMac ? [{ value: 'apple', label: 'Apple On-device' }] : []),
+    { value: 'ollama', label: 'Ollama' },
+    { value: 'gemini', label: 'Gemini' },
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'groq', label: 'Groq' },
+  ];
+}
+
+export function formattingProviderRequiresApiKey(provider: string): boolean {
+  return ['gemini', 'openai', 'anthropic', 'groq'].includes(provider);
+}
 
 export const txDefaultModels: Record<string, string> = {
   none: '',
@@ -110,6 +153,8 @@ export const txDefaultModels: Record<string, string> = {
 
 export const fmtDefaultModels: Record<string, string> = {
   none: '',
+  apple: '',
+  ollama: 'qwen3.5:4b',
   gemini: 'gemini-2.5-flash',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',
@@ -145,6 +190,11 @@ export const styleData: Record<string, { label: string; description: string; exa
     description: 'Polished, clear, and business-appropriate language',
     example: 'I was considering whether we might visit the new restaurant on Friday, if your schedule allows.',
   },
+  custom: {
+    label: 'Custom',
+    description: 'Your instructions for rewriting dictation',
+    example: 'Yeah, I was thinking we could try that new place on Friday, if your schedule allows.',
+  },
 };
 
 export const styleExampleInput = 'yeah i was thinking we could try that new place on friday if youre free';
@@ -159,6 +209,8 @@ export const providerLabels: Record<string, string> = {
   elevenlabs: 'ElevenLabs',
   anthropic: 'Anthropic',
   groq: 'Groq',
+  apple: 'Apple On-device',
+  ollama: 'Ollama',
 };
 
 export const settingsSections: Array<{ id: SectionId; label: string; description: string }> = [

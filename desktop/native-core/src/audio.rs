@@ -289,6 +289,10 @@ pub fn start_recording(device_name: Option<&str>) -> Result<PathBuf, String> {
     Ok(wav_path)
 }
 
+pub fn is_recording() -> bool {
+    RECORDING.load(Ordering::SeqCst)
+}
+
 fn resolve_input_device(
     host: &cpal::Host,
     device_name: Option<&str>,

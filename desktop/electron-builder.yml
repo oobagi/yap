@@ -23,6 +23,7 @@ extraResources:
     filter:
       - yap-overlay-*-apple-darwin
       - yap-speech-*-apple-darwin
+      - yap-format-*-apple-darwin
   - from: native-core/sounds
     to: sounds
 mac:

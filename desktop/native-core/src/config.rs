@@ -90,6 +90,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub fmt_style: FormattingStyle,
 
+    /// Primary transformation instructions when formatting style is custom
+    #[serde(default)]
+    pub fmt_custom_prompt: String,
+
     /// Whether the user has completed onboarding
     #[serde(default)]
     pub onboarding_complete: bool,
@@ -196,6 +200,7 @@ impl Default for AppConfig {
             fmt_api_key: String::new(),
             fmt_model: String::new(),
             fmt_style: FormattingStyle::default(),
+            fmt_custom_prompt: String::new(),
             onboarding_complete: false,
             dg_smart_format: true,
             dg_keywords: String::new(),

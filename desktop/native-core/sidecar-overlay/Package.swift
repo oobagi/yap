@@ -7,6 +7,7 @@ let package = Package(
     products: [
         .executable(name: "yap-overlay", targets: ["yap-overlay"]),
         .executable(name: "yap-speech", targets: ["yap-speech"]),
+        .executable(name: "yap-format", targets: ["yap-format"]),
     ],
     targets: [
         .executableTarget(
@@ -28,6 +29,17 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Foundation"),
                 .linkedFramework("Speech"),
+            ]
+        ),
+        .executableTarget(
+            name: "yap-format",
+            path: "FormatSources",
+            swiftSettings: [
+                .unsafeFlags(["-suppress-warnings"]),
+            ],
+            linkerSettings: [
+                .linkedFramework("Foundation"),
+                .linkedFramework("FoundationModels"),
             ]
         )
     ]

@@ -9,7 +9,7 @@ use crate::audio;
 use crate::audio_ducking;
 use crate::config::{self, AppConfig};
 use crate::formatting::{self, FormattingOptions, FormattingProvider};
-use crate::history;
+use crate::history::{self, HistoryAppend};
 use crate::hotkey::{self, HotkeySpec};
 use crate::paste;
 use crate::transcription::{self, TranscriptionOptions, TranscriptionProvider};
@@ -85,6 +85,18 @@ static HOST: once_cell::sync::Lazy<Mutex<Option<Arc<dyn DictationHost>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 static LEVEL_POLLER_STARTED: AtomicBool = AtomicBool::new(false);
 static RUNNING: AtomicBool = AtomicBool::new(false);
+
+pub fn clear_runtime_cache() -> Result<crate::cache::CacheCleanupSummary, String> {
+    // Keep the state lock until cleanup finishes so a new recording cannot start
+    // while its temporary audio file is being removed.
+    let current = RUNTIME
+        .lock()
+        .map_err(|_| "Dictation state is unavailable".to_string())?;
+    if *current != RuntimeState::Idle {
+        return Err("Finish the current dictation before cleaning the cache.".to_string());
+    }
+    crate::cache::clear_runtime_cache()
+}
 
 pub fn start(host: Arc<dyn DictationHost>) -> Result<(), String> {
     let _ = config::load();
@@ -585,18 +597,11 @@ fn stop_and_process() {
                 .map_err(|error| format!("failed to start async runtime: {error}"))
                 .and_then(|runtime| runtime.block_on(process_audio_pipeline(&wav_path, &cfg)));
 
-            match result {
-                Ok(text) if !text.trim().is_empty() => {
-                    let text = text.trim().to_string();
+            let keep_overlay_error = match result {
+                Ok(result) if !result.text.trim().is_empty() => {
+                    let text = result.text.trim().to_string();
                     if cfg.history_enabled {
-                        let _ = history::append(
-                            text.clone(),
-                            provider_name(&cfg.tx_provider),
-                            (cfg.fmt_provider != FormattingProvider::None)
-                                .then(|| provider_name(&cfg.fmt_provider)),
-                            (cfg.fmt_provider != FormattingProvider::None)
-                                .then(|| format!("{:?}", cfg.fmt_style).to_lowercase()),
-                        );
+                        let _ = history::append(result.into_history_append(text.clone()));
                         emit("history:changed", Value::Null);
                     }
                     if let Err(error) = paste::paste_text(&text, cfg.press_enter_after_paste) {
@@ -604,12 +609,14 @@ fn stop_and_process() {
                     } else {
                         emit("dictation:pasted", json!({ "text": text }));
                     }
+                    false
                 }
                 Ok(_) => {
                     emit(
                         "dictation:skipped",
                         json!({ "reason": "empty transcription" }),
                     );
+                    false
                 }
                 Err(error) => {
                     let settings_section = provider_settings_section_for_error(&error);
@@ -617,15 +624,90 @@ fn stop_and_process() {
                     if let Some(section) = settings_section {
                         emit("settings:show-section", json!(section));
                     }
+                    true
                 }
-            }
+            };
 
-            set_state(RuntimeState::Idle);
+            set_state_with_overlay(RuntimeState::Idle, !keep_overlay_error);
         })
         .ok();
 }
 
-async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<String, String> {
+#[derive(Debug, Clone)]
+struct ProcessedDictation {
+    text: String,
+    raw_text: Option<String>,
+    formatted_text: Option<String>,
+    transcription_provider: String,
+    transcription_model: Option<String>,
+    formatting_provider: Option<String>,
+    formatting_model: Option<String>,
+    formatting_style: Option<String>,
+    formatting_instruction: Option<String>,
+}
+
+impl ProcessedDictation {
+    fn unformatted(text: String, cfg: &AppConfig) -> Self {
+        Self {
+            raw_text: Some(text.clone()),
+            text,
+            formatted_text: None,
+            transcription_provider: provider_name(&cfg.tx_provider),
+            transcription_model: transcription_model_for_history(cfg),
+            formatting_provider: None,
+            formatting_model: None,
+            formatting_style: None,
+            formatting_instruction: None,
+        }
+    }
+
+    fn formatted(text: String, raw_text: Option<String>, cfg: &AppConfig) -> Self {
+        let formatting_model = if cfg.fmt_provider == FormattingProvider::None {
+            None
+        } else {
+            let model = if cfg.fmt_model.trim().is_empty() {
+                cfg.fmt_provider.default_model().to_string()
+            } else {
+                cfg.fmt_model.clone()
+            };
+            (!model.trim().is_empty()).then_some(model)
+        };
+
+        Self {
+            raw_text,
+            formatted_text: Some(text.clone()),
+            text,
+            transcription_provider: provider_name(&cfg.tx_provider),
+            transcription_model: transcription_model_for_history(cfg),
+            formatting_provider: (cfg.fmt_provider != FormattingProvider::None)
+                .then(|| provider_name(&cfg.fmt_provider)),
+            formatting_model,
+            formatting_style: (cfg.fmt_provider != FormattingProvider::None)
+                .then(|| format!("{:?}", cfg.fmt_style).to_lowercase()),
+            formatting_instruction: (cfg.fmt_provider != FormattingProvider::None)
+                .then(|| formatting::resolved_instruction(cfg.fmt_style, &cfg.fmt_custom_prompt)),
+        }
+    }
+
+    fn into_history_append(self, text: String) -> HistoryAppend {
+        HistoryAppend {
+            text,
+            raw_text: self.raw_text,
+            formatted_text: self.formatted_text,
+            transcription_provider: self.transcription_provider,
+            transcription_model: self.transcription_model,
+            formatting_provider: self.formatting_provider,
+            formatting_model: self.formatting_model,
+            formatting_style: self.formatting_style,
+            formatting_instruction: self.formatting_instruction,
+        }
+    }
+}
+
+async fn process_audio_pipeline(
+    wav_path: &PathBuf,
+    cfg: &AppConfig,
+) -> Result<ProcessedDictation, String> {
     if cfg!(not(target_os = "macos")) && cfg.tx_provider == TranscriptionProvider::None {
         return Err("Choose an API provider in Settings".to_string());
     }
@@ -651,9 +733,14 @@ async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<S
         && cfg.tx_provider.can_also_format();
 
     let raw_text = if use_oneshot {
-        transcription::transcribe_gemini_oneshot(wav_path, &tx_options, cfg.fmt_style)
-            .await
-            .map_err(|error| format!("Transcription failed: {error}"))?
+        transcription::transcribe_gemini_oneshot(
+            wav_path,
+            &tx_options,
+            cfg.fmt_style,
+            &cfg.fmt_custom_prompt,
+        )
+        .await
+        .map_err(|error| format!("Transcription failed: {error}"))?
     } else {
         transcription::transcribe(cfg.tx_provider, wav_path, &tx_options)
             .await
@@ -662,15 +749,22 @@ async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<S
 
     let trimmed = raw_text.trim().to_string();
     if trimmed.is_empty() {
-        return Ok(trimmed);
+        return Ok(ProcessedDictation::unformatted(trimmed, cfg));
     }
 
     if is_prompt_regurgitation(&trimmed) {
-        return Ok(String::new());
+        return Ok(ProcessedDictation::unformatted(String::new(), cfg));
     }
 
     if use_oneshot {
-        return Ok(trimmed);
+        let text = formatting::render_formatted_text_for_paste(&trimmed);
+        let mut result = ProcessedDictation::formatted(text, None, cfg);
+        result.formatting_model = result.transcription_model.clone();
+        result.formatting_instruction = Some(transcription::audio_prompt_for_style(
+            cfg.fmt_style,
+            &cfg.fmt_custom_prompt,
+        ));
+        return Ok(result);
     }
 
     let fmt_api_key = if cfg.fmt_api_key.is_empty() {
@@ -680,9 +774,9 @@ async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<S
     };
 
     if cfg.fmt_provider == FormattingProvider::None {
-        return Ok(trimmed);
+        return Ok(ProcessedDictation::unformatted(trimmed, cfg));
     }
-    if fmt_api_key.is_empty() {
+    if cfg.fmt_provider.requires_api_key() && fmt_api_key.is_empty() {
         return Err("Set up a formatting API key in Settings".to_string());
     }
 
@@ -690,18 +784,32 @@ async fn process_audio_pipeline(wav_path: &PathBuf, cfg: &AppConfig) -> Result<S
         api_key: fmt_api_key,
         model: cfg.fmt_model.clone(),
         style: cfg.fmt_style,
+        custom_prompt: cfg.fmt_custom_prompt.clone(),
     };
     let formatted = formatting::format(cfg.fmt_provider, &trimmed, &fmt_options)
         .await
         .map_err(|error| format!("Formatting failed: {error}"))?;
-    if is_prompt_regurgitation(&formatted) {
-        return Ok(trimmed);
+    if !formatted.applied || is_prompt_regurgitation(&formatted.text) {
+        return Ok(ProcessedDictation::unformatted(trimmed, cfg));
     }
-    Ok(formatted)
+    Ok(ProcessedDictation::formatted(
+        formatted.text,
+        Some(trimmed),
+        cfg,
+    ))
 }
 
 fn provider_name<T: std::fmt::Debug>(provider: &T) -> String {
     format!("{provider:?}").to_lowercase()
+}
+
+fn transcription_model_for_history(cfg: &AppConfig) -> Option<String> {
+    let model = if cfg.tx_model.trim().is_empty() {
+        cfg.tx_provider.default_model()
+    } else {
+        cfg.tx_model.trim()
+    };
+    (!model.is_empty()).then(|| model.to_string())
 }
 
 fn classify_error(error: &str) -> String {
@@ -714,6 +822,10 @@ fn classify_error(error: &str) -> String {
         "Set up an API key in Settings".to_string()
     } else if lower.contains("quota") || lower.contains("rate") || lower.contains("429") {
         "Rate limited -- try again".to_string()
+    } else if lower.contains("appleintelligencenotenabled")
+        || lower.contains("foundation models formatter is unavailable")
+    {
+        "Apple Intelligence unavailable".to_string()
     } else if is_provider_settings_error(&lower) {
         "Invalid API key".to_string()
     } else if lower.contains("timed out") || lower.contains("timeout") {
@@ -728,6 +840,11 @@ fn classify_error(error: &str) -> String {
 fn provider_settings_section_for_error(error: &str) -> Option<&'static str> {
     let lower = error.to_lowercase();
     if lower.contains("set up a formatting api key") {
+        return Some("formatting");
+    }
+    if lower.contains("appleintelligencenotenabled")
+        || lower.contains("foundation models formatter is unavailable")
+    {
         return Some("formatting");
     }
     if lower.contains("choose an api provider") || lower.contains("set up an api key") {
@@ -752,6 +869,7 @@ fn is_provider_settings_error(lower: &str) -> bool {
         || lower.contains("authorization")
         || lower.contains("invalid api key")
         || lower.contains("api key invalid")
+        || lower.contains("api key not valid")
         || lower.contains("missing api key")
         || lower.contains("invalid token")
 }
@@ -771,6 +889,10 @@ fn state() -> RuntimeState {
 }
 
 fn set_state(next: RuntimeState) {
+    set_state_with_overlay(next, true);
+}
+
+fn set_state_with_overlay(next: RuntimeState, update_overlay: bool) {
     if matches!(next, RuntimeState::Idle) {
         if let Ok(mut active_hands_free) = HANDS_FREE_RECORDING.lock() {
             *active_hands_free = false;
@@ -811,7 +933,9 @@ fn set_state(next: RuntimeState) {
             "paused": paused,
         }),
     );
-    emit_overlay_state(state.to_string(), hands_free, paused);
+    if update_overlay {
+        emit_overlay_state(state.to_string(), hands_free, paused);
+    }
 }
 
 fn emit_error(title: &str, message: String) {
@@ -1255,5 +1379,44 @@ fn state_label(state: RuntimeState) -> &'static str {
         RuntimeState::Recording => "recording",
         RuntimeState::Paused => "paused",
         RuntimeState::Processing => "processing",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_cleanup_rejects_recording_and_processing_before_touching_files() {
+        for busy in [
+            RuntimeState::PressPending,
+            RuntimeState::Recording,
+            RuntimeState::Paused,
+            RuntimeState::Processing,
+        ] {
+            *RUNTIME.lock().unwrap() = busy;
+            let result = clear_runtime_cache();
+            *RUNTIME.lock().unwrap() = RuntimeState::Idle;
+            assert!(result.unwrap_err().contains("Finish the current dictation"));
+        }
+    }
+
+    #[test]
+    fn unformatted_history_has_raw_text_and_default_model_without_formatter_metadata() {
+        let cfg = AppConfig {
+            tx_provider: TranscriptionProvider::LocalWhisper,
+            fmt_provider: FormattingProvider::Ollama,
+            ..Default::default()
+        };
+        let result = ProcessedDictation::unformatted("Keep my words".into(), &cfg);
+        let entry = result.into_history_append("Keep my words".into());
+        assert_eq!(entry.raw_text.as_deref(), Some("Keep my words"));
+        assert_eq!(
+            entry.transcription_model.as_deref(),
+            Some("large-v3-turbo-q5_0")
+        );
+        assert!(entry.formatted_text.is_none());
+        assert!(entry.formatting_provider.is_none());
+        assert!(entry.formatting_instruction.is_none());
     }
 }

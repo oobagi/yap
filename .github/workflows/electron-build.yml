@@ -70,6 +70,10 @@ jobs:
         working-directory: desktop
         run: pnpm run electron:check
 
+      - name: Test native runtime
+        working-directory: desktop
+        run: cargo test --locked --manifest-path native-core/Cargo.toml --lib
+
       - name: Clean previous Electron outputs
         working-directory: desktop
         shell: bash

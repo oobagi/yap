@@ -12,8 +12,15 @@ export type TranscriptionProvider =
   | "openai"
   | "deepgram"
   | "elevenlabs";
-export type FormattingProvider = "none" | "gemini" | "openai" | "anthropic" | "groq";
-export type FormattingStyle = "casual" | "formatted" | "professional";
+export type FormattingProvider =
+  | "none"
+  | "gemini"
+  | "openai"
+  | "anthropic"
+  | "groq"
+  | "apple"
+  | "ollama";
+export type FormattingStyle = "casual" | "formatted" | "professional" | "custom";
 
 export interface AppConfig {
   hotkey: string;
@@ -26,6 +33,7 @@ export interface AppConfig {
   fmtApiKey: string;
   fmtModel: string;
   fmtStyle: FormattingStyle;
+  fmtCustomPrompt: string;
   onboardingComplete: boolean;
   dgSmartFormat: boolean;
   dgKeywords: string;
@@ -93,6 +101,7 @@ function defaultConfig(): AppConfig {
     fmtApiKey: "",
     fmtModel: "",
     fmtStyle: "formatted",
+    fmtCustomPrompt: "",
     onboardingComplete: false,
     dgSmartFormat: true,
     dgKeywords: "",
@@ -115,16 +124,19 @@ function normalizeConfig(input: Partial<AppConfig> | null | undefined): AppConfi
   const defaults = defaultConfig();
   const config = { ...defaults, ...(input ?? {}) };
   const txProvider = normalizeTranscriptionProvider(config.txProvider, defaults.txProvider);
+  const fmtProvider = normalizeFormattingProvider(config.fmtProvider, defaults.fmtProvider);
 
   return {
     ...config,
     txProvider,
+    fmtProvider,
     hotkey: stringOrDefault(config.hotkey, defaults.hotkey),
     audioDevice: stringOrDefault(config.audioDevice, ""),
     txApiKey: stringOrDefault(config.txApiKey, ""),
     txModel: stringOrDefault(config.txModel, ""),
     fmtApiKey: stringOrDefault(config.fmtApiKey, ""),
     fmtModel: stringOrDefault(config.fmtModel, ""),
+    fmtCustomPrompt: stringOrDefault(config.fmtCustomPrompt, ""),
     dgKeywords: stringOrDefault(config.dgKeywords, ""),
     dgLanguage: stringOrDefault(config.dgLanguage, ""),
     oaiLanguage: stringOrDefault(config.oaiLanguage, ""),
@@ -156,6 +168,27 @@ function normalizeTranscriptionProvider(
   fallback: TranscriptionProvider
 ): TranscriptionProvider {
   return isTranscriptionProvider(value) ? value : fallback;
+}
+
+function isFormattingProvider(value: unknown): value is FormattingProvider {
+  return (
+    value === "none" ||
+    value === "gemini" ||
+    value === "openai" ||
+    value === "anthropic" ||
+    value === "groq" ||
+    value === "apple" ||
+    value === "ollama"
+  );
+}
+
+function normalizeFormattingProvider(
+  value: unknown,
+  fallback: FormattingProvider
+): FormattingProvider {
+  if (!isFormattingProvider(value)) return fallback;
+  if (value === "apple" && process.platform !== "darwin") return fallback;
+  return value;
 }
 
 function stringOrDefault(value: unknown, fallback: string): string {

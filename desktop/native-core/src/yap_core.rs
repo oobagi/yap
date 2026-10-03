@@ -8,6 +8,7 @@ use yap_core_lib::commands::{self, CommandHost};
 use yap_core_lib::config::AppConfig;
 use yap_core_lib::dictation::{self, DictationHost};
 use yap_core_lib::model_manager::WhisperDownloadRequest;
+use yap_core_lib::ollama::OllamaPullRequest;
 
 #[derive(Debug, Deserialize)]
 struct RpcRequest {
@@ -143,6 +144,7 @@ fn handle_request(request: RpcRequest, host: Arc<SidecarHost>) -> Result<Option<
             commands::delete_all_history()?;
             Ok(Some(json!({ "cleared": true })))
         }
+        "cache.clear" => to_value(commands::clear_runtime_cache()?).map(Some),
         "models.whisper.list" => to_value(commands::list_whisper_models()?).map(Some),
         "models.whisper.search" => {
             let request = parse_params(request.params)?;
@@ -183,6 +185,40 @@ fn handle_request(request: RpcRequest, host: Arc<SidecarHost>) -> Result<Option<
         "models.whisper.reveal" => {
             commands::reveal_whisper_models()?;
             Ok(Some(json!({ "revealed": true })))
+        }
+        "models.ollama.list" => to_value(commands::list_ollama_models()?).map(Some),
+        "models.ollama.search" => {
+            let request = parse_params(request.params)?;
+            to_value(commands::search_ollama_models(request)?).map(Some)
+        }
+        "models.ollama.pull" => {
+            let pull: OllamaPullRequest = parse_params(request.params)?;
+            let pull_id = pull.id.clone();
+            let worker_pull_id = pull_id.clone();
+            let host = Arc::clone(&host);
+            std::thread::spawn(move || {
+                if let Err(error) = commands::pull_ollama_model(pull, host.as_ref()) {
+                    CommandHost::emit(
+                        host.as_ref(),
+                        "models:ollama-download",
+                        json!({
+                            "id": worker_pull_id,
+                            "model": worker_pull_id,
+                            "status": "error",
+                            "error": error,
+                        }),
+                    );
+                }
+            });
+            Ok(Some(json!({
+                "started": true,
+                "id": pull_id,
+            })))
+        }
+        "models.ollama.delete" => {
+            let id = required_string_param(request.params, "id")?;
+            commands::delete_ollama_model(&id)?;
+            Ok(Some(json!({ "deleted": true })))
         }
         "audio.list_devices" => to_value(commands::audio_device_names()).map(Some),
         "runtime.start" => {

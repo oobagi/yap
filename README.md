@@ -40,8 +40,8 @@ https://github.com/oobagi/yap/releases/latest
 - Global push-to-talk dictation that pastes into the active app.
 - Hands-free recording from the hotkey or floating pill.
 - Local macOS 26+ SpeechAnalyzer transcription or cloud transcription with Gemini, OpenAI, Deepgram, and ElevenLabs.
-- Optional cleanup styles for casual, formatted, or professional text.
-- Local transcript history and in-app update checks.
+- Optional cleanup styles for casual, formatted, professional, or custom text, with local or cloud AI.
+- Local transcript history with original text, formatted output, and model/instruction details, plus in-app update checks.
 
 ## Set Up Transcription
 
@@ -57,14 +57,21 @@ For API providers, paste the provider key into **Settings -> Transcription -> AP
 
 ## Optional Formatting
 
-Formatting can clean up the transcript after transcription. Choose **Casual**, **Formatted**, or **Professional**, then add a key if needed.
+Formatting can clean up the transcript after transcription. Choose **Casual**, **Formatted**, **Professional**, or **Custom**. Custom lets you supply instructions such as “make my dictation concise and professional.”
+
+- **Apple On-device**: uses Apple Intelligence on an eligible Mac running macOS 26 or newer, with Apple Intelligence enabled and its model ready. No API key is needed.
+- **Ollama**: install and run [Ollama](https://ollama.com), then use Yap's model manager to download and select a local formatting model. No API key is needed. Downloaded models are shared with your Ollama installation.
+
+Cloud formatting providers:
 
 - [Gemini](https://ai.google.dev/gemini-api/docs/api-key)
 - [OpenAI](https://platform.openai.com/api-keys)
 - [Anthropic](https://platform.claude.com/settings/keys)
 - [Groq](https://console.groq.com/keys)
 
-Paste the provider key into **Settings -> Formatting -> API key**. If formatting uses the same provider as transcription, Yap can reuse the transcription key.
+For cloud providers, paste the provider key into **Settings -> Formatting -> API key**. If formatting uses the same provider as transcription, Yap can reuse the transcription key. If a local formatter is unavailable, Yap pastes the original transcription.
+
+Open an entry's **Details** in **History** to compare the original and formatted text and see the instruction used. Original text is unavailable when Gemini transcribes and formats in a single request. **Advanced -> Clean Cache** removes temporary audio and the debug log while dictation is idle; it keeps history and downloaded models.
 
 ## Config
 
@@ -81,6 +88,7 @@ Most options can be changed from **Settings** in the tray/menu bar app.
   "fmtApiKey": "",
   "fmtModel": "",
   "fmtStyle": "formatted",
+  "fmtCustomPrompt": "",
   "backgroundAudioMode": "mute",
   "alwaysVisiblePill": true,
   "historyEnabled": true
