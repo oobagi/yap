@@ -72,13 +72,13 @@ Config is stored at `~/.config/yap/config.json` on macOS and `%APPDATA%\yap\conf
 - `historyEnabled`, `speechLocale`
 - provider-specific Deepgram, OpenAI, Gemini, and ElevenLabs options
 
-Empty model strings fall back to provider defaults. Formatting falls back to the transcription API key when its own API key is blank.
+Empty model strings fall back to provider defaults, except Local Whisper transcription and Ollama formatting, which require an explicit model selection. Formatting falls back to the transcription API key when its own API key is blank.
 
 ## Working Rules
 
 - Keep cross-platform behavior in the Rust `yap-core` command/dictation runtime where possible.
 - Use platform-specific code only for OS integration: hotkeys, overlay behavior, paste, speech, bundling, and permissions.
-- macOS on-device transcription is implemented; Windows on-device transcription currently returns unavailable, so Windows needs an API transcription provider.
+- Apple on-device transcription is macOS-only; Windows supports Local Whisper or an API transcription provider.
 
 ## Repo Skills
 

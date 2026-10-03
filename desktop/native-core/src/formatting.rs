@@ -36,7 +36,7 @@ impl FormattingProvider {
             Self::Anthropic => "claude-haiku-4-5-20251001",
             Self::Groq => "llama-3.3-70b-versatile",
             Self::Apple => "",
-            Self::Ollama => "qwen3.5:4b",
+            Self::Ollama => "",
         }
     }
 
@@ -168,6 +168,10 @@ pub async fn format(
 
     if provider.requires_api_key() && options.api_key.is_empty() {
         return Ok(FormattingResult::unchanged(text));
+    }
+
+    if provider == FormattingProvider::Ollama && options.model.trim().is_empty() {
+        return Err("Choose an Ollama model in Formatting Settings".to_string());
     }
 
     let result = match provider {
@@ -612,6 +616,20 @@ async fn format_groq(text: &str, options: &FormattingOptions) -> Result<String, 
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn ollama_requires_a_model_instead_of_using_an_implicit_default() {
+        for model in ["", "  "] {
+            let options = FormattingOptions {
+                model: model.to_string(),
+                ..Default::default()
+            };
+            let error = format(FormattingProvider::Ollama, "Keep my words.", &options)
+                .await
+                .unwrap_err();
+            assert_eq!(error, "Choose an Ollama model in Formatting Settings");
+        }
+    }
+
     #[test]
     fn requests_separate_instructions_from_unwrapped_transcripts() {
         for style in [
@@ -873,8 +891,8 @@ mod tests {
     #[test]
     #[ignore = "requires a running local Ollama service and an installed formatter model"]
     fn ollama_actual_model_output_survives_render_pass() {
-        let model =
-            std::env::var("YAP_OLLAMA_TEST_MODEL").unwrap_or_else(|_| "qwen3.5:4b".to_string());
+        let model = std::env::var("YAP_OLLAMA_TEST_MODEL")
+            .expect("set YAP_OLLAMA_TEST_MODEL to an installed model");
         let input = "This is a test of one if this feature works two if it's decent and three if I want to keep it.";
         let options = FormattingOptions {
             model,

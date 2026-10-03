@@ -131,6 +131,7 @@
   let ollamaSearchResults = $state<OllamaModelSummary[]>([]);
   let ollamaSearchLoading = $state(false);
   let ollamaSearchError = $state('');
+  let ollamaSearchedQuery = $state('');
   let ollamaDownloadEvent = $state<OllamaDownloadEvent | null>(null);
   let pendingOllamaUseAfterDownload = $state<string | null>(null);
 
@@ -221,33 +222,11 @@
   );
 
   let currentStyleData = $derived(styleData[fmtStyle] ?? styleData.formatted);
-  let effectiveOllamaModelId = $derived(fmtModel.trim() || fmtDefaultModels.ollama);
-  let recommendedOllamaModel = $derived.by(() => {
-    const list = ollamaModelList;
-    return list?.models.find((model) => sameOllamaModel(model.id, list.recommendedId)) ?? null;
-  });
-  let selectedOllamaModel = $derived.by(() => (
-    ollamaModelList?.models.find((model) => sameOllamaModel(model.id, effectiveOllamaModelId)) ?? null
-  ));
-  let recommendedOllamaMissing = $derived(
-    fmtProvider === 'ollama' &&
-      ollamaModelList?.serviceAvailable &&
-      !recommendedOllamaModel?.installed &&
-      (!fmtModel.trim() || sameOllamaModel(fmtModel.trim(), fmtDefaultModels.ollama))
-  );
-  let effectiveWhisperModelId = $derived(txModel.trim() || txDefaultModels.localwhisper);
-  let recommendedWhisperModel = $derived.by(() => {
-    const list = whisperModelList;
-    return list?.models.find((model) => model.id === list.recommendedId) ?? null;
-  });
+  let effectiveOllamaModelId = $derived(fmtModel.trim());
+  let effectiveWhisperModelId = $derived(txModel.trim());
   let selectedWhisperModel = $derived.by(() => (
     whisperModelList?.models.find((model) => model.id === effectiveWhisperModelId || model.path === txModel.trim()) ?? null
   ));
-  let recommendedWhisperMissing = $derived(
-    txProvider === 'localwhisper' &&
-      !recommendedWhisperModel?.installed &&
-      (!txModel.trim() || txModel.trim() === txDefaultModels.localwhisper)
-  );
 
   function languageOptionFor(value: string) {
     return languageOptions.find((option) => option.value === value) ?? languageOptions[0];
@@ -484,12 +463,8 @@
     return 'Starting';
   }
 
-  function modelMeta(model: WhisperModelSummary): string {
-    return [model.sizeLabel, model.speedHint, model.accuracyHint].filter(Boolean).join(' · ');
-  }
-
   function ollamaModelMeta(model: OllamaModelSummary): string {
-    return [model.sizeLabel, model.speedHint, model.qualityHint].filter(Boolean).join(' · ');
+    return [model.sizeLabel, model.libraryInfo, model.details].filter(Boolean).join(' · ');
   }
 
   function normalizeOllamaModel(id: string): string {
@@ -527,7 +502,6 @@
 
   function unavailableOllamaModelList(message: string): OllamaModelList {
     return {
-      recommendedId: fmtDefaultModels.ollama,
       serviceAvailable: false,
       serviceError: message,
       models: [],
@@ -536,12 +510,18 @@
 
   async function searchOllamaModels() {
     const query = ollamaSearchQuery.trim();
-    if (!query || !hasNativeRuntime) return;
+    if (query.length < 2 || ollamaSearchLoading || !hasNativeRuntime) return;
     ollamaSearchLoading = true;
     ollamaSearchError = '';
+    ollamaSearchResults = [];
+    ollamaSearchedQuery = '';
     try {
-      ollamaSearchResults = await invokeRuntime<OllamaModelSummary[]>('models.ollama.search', { query });
+      const results = await invokeRuntime<OllamaModelSummary[]>('models.ollama.search', { query });
+      if (query !== ollamaSearchQuery.trim()) return;
+      ollamaSearchResults = results;
+      ollamaSearchedQuery = query;
     } catch (error) {
+      if (query !== ollamaSearchQuery.trim()) return;
       ollamaSearchError = error instanceof Error ? error.message : String(error);
     } finally {
       ollamaSearchLoading = false;
@@ -1769,29 +1749,13 @@
                       <button class="btn" type="button" onclick={revealWhisperModels}>Reveal</button>
                     </div>
 
-                    {#if recommendedWhisperMissing && recommendedWhisperModel}
-                      <div class="model-setup-state">
-                        <div class="field-copy">
-                          <span class="model-setup-title">Recommended model missing</span>
-                          <span class="field-description">
-                            Download {recommendedWhisperModel.name} before using Local Whisper.
-                          </span>
-                        </div>
-                        <button
-                          class="btn btn-primary"
-                          type="button"
-                          aria-label={`Download recommended model ${recommendedWhisperModel.name}`}
-                          disabled={isAnyWhisperDownloadActive()}
-                          onclick={() => downloadWhisperModel(recommendedWhisperModel)}
-                        >
-                          {isDownloadingWhisperModel(recommendedWhisperModel) ? 'Downloading' : 'Download recommended model'}
-                        </button>
-                      </div>
-                    {/if}
-
                     {#if whisperModelsLoading && !whisperModelList}
                       <div class="history-empty-state">
                         <span>Loading models...</span>
+                      </div>
+                    {:else if whisperModelList && whisperModelList.models.length === 0}
+                      <div class="history-empty-state">
+                        <span>No models installed. Search Hugging Face below to download one, or enter a model path.</span>
                       </div>
                     {:else if whisperModelList}
                       <div class="model-list">
@@ -1806,7 +1770,7 @@
                                   <span class="model-status">Not installed</span>
                                 {/if}
                               </div>
-                              <span class="field-description">{modelMeta(model) || model.fileName}</span>
+                              <span class="field-description">{model.sizeLabel || model.fileName}</span>
                               {#if isDownloadingWhisperModel(model)}
                                 <div
                                   class="model-progress"
@@ -1925,11 +1889,11 @@
                     <input
                       class="input"
                       type="text"
-                      placeholder={selectedWhisperModel?.path ?? txDefaultModels.localwhisper}
+                      placeholder={selectedWhisperModel?.path ?? 'Enter a GGML .bin model path'}
                       bind:value={txModel}
                     />
                     <span class="field-description">
-                      Leave empty to use {txDefaultModels.localwhisper}, choose a downloaded model above, or paste an absolute GGML .bin path.
+                      Choose a downloaded model above, or paste an absolute GGML .bin path. A model must be selected to use Local Whisper.
                     </span>
                   </div>
                 {:else}
@@ -2020,7 +1984,11 @@
               <div class="field-row">
                 <span class="field-label">Provider</span>
                 <div class="select-wrapper">
-                  <select class="select" bind:value={fmtProvider}>
+                  <select
+                    class="select"
+                    bind:value={fmtProvider}
+                    aria-describedby={fmtProvider === 'apple' ? 'apple-formatting-warning' : undefined}
+                  >
                     {#each fmtProviderOptions as p}
                       <option value={p.value}>{p.label}</option>
                     {/each}
@@ -2033,6 +2001,10 @@
                 </div>
                 {#if !hasFmtProvider}
                   <span class="field-description">Paste the raw transcription without cleanup.</span>
+                {:else if fmtProvider === 'apple'}
+                  <span id="apple-formatting-warning" class="field-description" role="note">
+                    <strong class="update-error">Warning.</strong> Apple formatting may not follow your custom instructions reliably. Check the result before sending.
+                  </span>
                 {/if}
               </div>
 
@@ -2127,31 +2099,15 @@
                       </div>
                     {/if}
 
-                    {#if recommendedOllamaMissing && recommendedOllamaModel}
-                      <div class="model-setup-state">
-                        <div class="field-copy">
-                          <span class="model-setup-title">Recommended model missing</span>
-                          <span class="field-description">
-                            Download {recommendedOllamaModel.name} before using Ollama formatting.
-                          </span>
-                        </div>
-                        <button
-                          class="btn btn-primary"
-                          type="button"
-                          aria-label={`Download recommended model ${recommendedOllamaModel.name}`}
-                          disabled={isAnyOllamaDownloadActive()}
-                          onclick={() => pullOllamaModel(recommendedOllamaModel)}
-                        >
-                          {isDownloadingOllamaModel(recommendedOllamaModel) ? 'Downloading' : 'Download recommended model'}
-                        </button>
-                      </div>
-                    {/if}
-
                     {#if ollamaModelsLoading && !ollamaModelList}
                       <div class="history-empty-state">
                         <span>Loading models...</span>
                       </div>
-                    {:else if ollamaModelList}
+                    {:else if ollamaModelList?.serviceAvailable && ollamaModelList.models.length === 0}
+                      <div class="history-empty-state">
+                        <span>No models installed. Search the Ollama library below to download one.</span>
+                      </div>
+                    {:else if ollamaModelList && ollamaModelList.models.length > 0}
                       <div class="model-list">
                         {#each ollamaModelList.models as model}
                           <div class="model-row" class:selected={isSelectedOllamaModel(model)}>
@@ -2232,8 +2188,13 @@
                       <input
                         class="input"
                         type="text"
-                        placeholder="Search or enter a model name, e.g. gemma3:4b"
+                        placeholder="Search by model name or tag"
                         bind:value={ollamaSearchQuery}
+                        oninput={() => {
+                          ollamaSearchResults = [];
+                          ollamaSearchError = '';
+                          ollamaSearchedQuery = '';
+                        }}
                         onkeydown={(event) => {
                           if (event.key === 'Enter') void searchOllamaModels();
                         }}
@@ -2249,6 +2210,8 @@
                     </div>
                     {#if ollamaSearchError}
                       <span class="field-description update-error">{ollamaSearchError}</span>
+                    {:else if ollamaSearchedQuery && !ollamaSearchLoading && ollamaSearchResults.length === 0}
+                      <span class="field-description">No models found for “{ollamaSearchedQuery}”.</span>
                     {/if}
                     {#if ollamaSearchResults.length > 0}
                       <div class="model-list compact">
@@ -2257,7 +2220,7 @@
                             <div class="model-main">
                               <div class="model-title-row">
                                 <span class="model-name">{model.name}</span>
-                                <span class="model-status">{model.source === 'library' ? 'Ollama Library' : 'Suggested'}</span>
+                                <span class="model-status">{model.installed ? 'Installed' : 'Ollama Library'}</span>
                               </div>
                               <span class="field-description">{ollamaModelMeta(model) || model.id}</span>
                               {#if isDownloadingOllamaModel(model)}
@@ -2314,11 +2277,11 @@
                     <input
                       class="input"
                       type="text"
-                      placeholder={selectedOllamaModel?.id ?? fmtDefaultModels.ollama}
+                      placeholder="Enter an installed model name"
                       bind:value={fmtModel}
                     />
                     <span class="field-description">
-                      Leave empty to use {fmtDefaultModels.ollama}, choose a downloaded model above, or enter any Ollama model name.
+                      Choose an installed model above, or enter its name. A model must be selected to use Ollama formatting.
                     </span>
                   </div>
 

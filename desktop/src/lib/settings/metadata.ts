@@ -50,19 +50,16 @@ export interface WhisperModelSummary {
   id: string;
   name: string;
   fileName: string;
-  source: 'curated' | 'huggingface' | 'installed';
+  source: 'huggingface' | 'installed';
   url?: string;
   sizeBytes?: number;
   sizeLabel?: string;
-  speedHint?: string;
-  accuracyHint?: string;
   installed: boolean;
   path?: string;
 }
 
 export interface WhisperModelList {
   cacheDir: string;
-  recommendedId: string;
   models: WhisperModelSummary[];
 }
 
@@ -79,16 +76,15 @@ export interface WhisperDownloadEvent {
 export interface OllamaModelSummary {
   id: string;
   name: string;
-  source: 'curated' | 'library' | 'installed';
+  source: 'library' | 'installed';
   sizeBytes?: number;
   sizeLabel?: string;
-  speedHint?: string;
-  qualityHint?: string;
+  libraryInfo?: string;
+  details?: string;
   installed: boolean;
 }
 
 export interface OllamaModelList {
-  recommendedId: string;
   serviceAvailable: boolean;
   serviceError?: string;
   models: OllamaModelSummary[];
@@ -144,7 +140,7 @@ export function formattingProviderRequiresApiKey(provider: string): boolean {
 
 export const txDefaultModels: Record<string, string> = {
   none: '',
-  localwhisper: 'large-v3-turbo-q5_0',
+  localwhisper: '',
   gemini: 'gemini-2.5-flash',
   openai: 'gpt-4o-transcribe',
   deepgram: 'nova-3',
@@ -154,7 +150,7 @@ export const txDefaultModels: Record<string, string> = {
 export const fmtDefaultModels: Record<string, string> = {
   none: '',
   apple: '',
-  ollama: 'qwen3.5:4b',
+  ollama: '',
   gemini: 'gemini-2.5-flash',
   openai: 'gpt-4o-mini',
   anthropic: 'claude-haiku-4-5-20251001',

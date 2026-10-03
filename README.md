@@ -45,9 +45,10 @@ https://github.com/oobagi/yap/releases/latest
 
 ## Set Up Transcription
 
-Open the tray/menu bar icon, choose **Settings**, then pick a transcription provider. Windows does not have the macOS on-device option, so choose one of the API providers below.
+Open the tray/menu bar icon, choose **Settings**, then pick a transcription provider. Windows supports Local Whisper or an API provider.
 
 - On-device transcription (macOS 26+ only, no API key)
+- **Local Whisper**: search Hugging Face to download and select a compatible GGML model, or enter an existing model path. A model selection is required; Yap does not choose a default. No API key is needed.
 - [Gemini](https://ai.google.dev/gemini-api/docs/api-key)
 - [OpenAI](https://platform.openai.com/api-keys)
 - [Deepgram](https://developers.deepgram.com/docs/create-additional-api-keys)
@@ -60,7 +61,7 @@ For API providers, paste the provider key into **Settings -> Transcription -> AP
 Formatting can clean up the transcript after transcription. Choose **Casual**, **Formatted**, **Professional**, or **Custom**. Custom lets you supply instructions such as “make my dictation concise and professional.”
 
 - **Apple On-device**: uses Apple Intelligence on an eligible Mac running macOS 26 or newer, with Apple Intelligence enabled and its model ready. No API key is needed.
-- **Ollama**: install and run [Ollama](https://ollama.com), then use Yap's model manager to download and select a local formatting model. No API key is needed. Downloaded models are shared with your Ollama installation.
+- **Ollama**: install and run [Ollama](https://ollama.com), then use Yap's model manager to search the library, download, and select a local formatting model. A model selection is required; Yap does not choose a default. No API key is needed. Downloaded models are shared with your Ollama installation.
 
 Cloud formatting providers:
 

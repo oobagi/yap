@@ -38,7 +38,7 @@ impl TranscriptionProvider {
     pub fn default_model(&self) -> &'static str {
         match self {
             Self::None => "",
-            Self::LocalWhisper => "large-v3-turbo-q5_0",
+            Self::LocalWhisper => "",
             Self::Gemini => "gemini-2.5-flash",
             Self::OpenAI => "gpt-4o-transcribe",
             Self::Deepgram => "nova-3",

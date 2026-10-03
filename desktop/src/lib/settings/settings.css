@@ -12,10 +12,12 @@
   --settings-text-muted-active: #5f5850;
   --settings-badge-bg: #ece6dd;
   --settings-badge-text: #6e665d;
-  --settings-primary: #0a84ff;
-  --settings-primary-hover: #409cff;
-  --settings-primary-soft: rgba(10, 132, 255, 0.14);
-  --settings-primary-border: rgba(10, 132, 255, 0.42);
+  --settings-primary: #a1fd7f;
+  --settings-primary-hover: #b4ff98;
+  --settings-primary-soft: rgba(161, 253, 127, 0.14);
+  --settings-primary-border: light-dark(rgba(44, 104, 26, 0.6), rgba(161, 253, 127, 0.42));
+  --settings-primary-text: light-dark(#2c681a, #a1fd7f);
+  --settings-on-primary: #172512;
   --settings-success-text: #137a4b;
   --settings-success-bg: rgba(19, 122, 75, 0.1);
   --settings-success-border: rgba(19, 122, 75, 0.32);
@@ -469,6 +471,7 @@ label {
 }
 
 .toggle-switch input:checked ~ .toggle-thumb {
+  background: var(--settings-on-primary);
   transform: translateX(18px);
 }
 
@@ -518,7 +521,7 @@ label {
 
 .segment-option input:checked + span {
   background: var(--settings-primary);
-  color: #fff;
+  color: var(--settings-on-primary);
 }
 
 .checkbox-row {
@@ -884,7 +887,7 @@ label {
 .btn-primary {
   border-color: var(--settings-primary);
   background: var(--settings-primary);
-  color: white;
+  color: var(--settings-on-primary);
 }
 
 .btn-primary:hover:not(:disabled) {

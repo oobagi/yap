@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const RECOMMENDED_WHISPER_MODEL_ID: &str = "large-v3-turbo-q5_0";
 const HUGGING_FACE_MODEL_API: &str = "https://huggingface.co/api/models";
 const WHISPER_CPP_REPO: &str = "ggerganov/whisper.cpp";
 const MAX_MODEL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
@@ -20,7 +19,6 @@ const PROGRESS_INTERVAL: Duration = Duration::from_millis(350);
 #[serde(rename_all = "camelCase")]
 pub struct WhisperModelList {
     pub cache_dir: String,
-    pub recommended_id: String,
     pub models: Vec<WhisperModelSummary>,
 }
 
@@ -37,10 +35,6 @@ pub struct WhisperModelSummary {
     pub size_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub size_label: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed_hint: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub accuracy_hint: Option<String>,
     pub installed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -49,7 +43,6 @@ pub struct WhisperModelSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum WhisperModelSource {
-    Curated,
     HuggingFace,
     Installed,
 }
@@ -89,24 +82,10 @@ pub fn list_whisper_models() -> Result<WhisperModelList, String> {
     let cache_dir = whisper_cache_dir();
     fs::create_dir_all(&cache_dir).map_err(|e| format!("failed to create Whisper cache: {e}"))?;
 
-    let mut models = curated_models()
-        .into_iter()
-        .map(|model| with_install_state(model, &cache_dir))
-        .collect::<Vec<_>>();
-
-    for installed in installed_models(&cache_dir)? {
-        if models
-            .iter()
-            .any(|model| model.file_name == installed.file_name)
-        {
-            continue;
-        }
-        models.push(installed);
-    }
+    let models = installed_models(&cache_dir)?;
 
     Ok(WhisperModelList {
         cache_dir: cache_dir.display().to_string(),
-        recommended_id: RECOMMENDED_WHISPER_MODEL_ID.to_string(),
         models,
     })
 }
@@ -189,8 +168,6 @@ pub fn download_whisper_model(
         url: Some(request.url),
         size_bytes,
         size_label: size_bytes.map(format_size),
-        speed_hint: None,
-        accuracy_hint: None,
         installed: true,
         path: Some(final_path.display().to_string()),
     })
@@ -233,6 +210,7 @@ async fn search_hugging_face(query: &str) -> Result<Vec<WhisperModelSummary>, St
         &[
             ("search", format!("whisper.cpp {query}")),
             ("full", "true".to_string()),
+            ("blobs", "true".to_string()),
             ("sort", "likes".to_string()),
             ("direction", "-1".to_string()),
             ("limit", "50".to_string()),
@@ -246,7 +224,34 @@ async fn search_hugging_face(query: &str) -> Result<Vec<WhisperModelSummary>, St
         .build()
         .map_err(|e| format!("failed to create Hugging Face search client: {e}"))?;
 
-    let models = client
+    // Repository search does not search filenames. Include the live whisper.cpp
+    // file listing so queries such as "large-v3-turbo" find the standard models.
+    let catalog_url = format!("{HUGGING_FACE_MODEL_API}/{WHISPER_CPP_REPO}?blobs=true");
+    let (models, catalog) = tokio::join!(
+        fetch_hugging_face_models(&client, url.as_str()),
+        fetch_hugging_face_models(&client, &catalog_url),
+    );
+    let models = models?;
+    let catalog = catalog?;
+
+    let models = models
+        .as_array()
+        .ok_or_else(|| "Hugging Face search returned an unexpected response".to_string())?;
+    let mut candidates = whisper_models_from_repo(&catalog, query);
+    for model in models {
+        candidates.extend(whisper_models_from_repo(model, query));
+    }
+
+    candidates.sort_by(|a, b| a.file_name.cmp(&b.file_name));
+    candidates.dedup_by(|a, b| a.file_name == b.file_name);
+    Ok(candidates.into_iter().take(25).collect())
+}
+
+async fn fetch_hugging_face_models(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<serde_json::Value, String> {
+    client
         .get(url)
         .header("User-Agent", "Yap model manager")
         .send()
@@ -254,56 +259,55 @@ async fn search_hugging_face(query: &str) -> Result<Vec<WhisperModelSummary>, St
         .map_err(|e| format!("Hugging Face search failed: {e}"))?
         .error_for_status()
         .map_err(|e| format!("Hugging Face search failed: {e}"))?
-        .json::<serde_json::Value>()
+        .json()
         .await
-        .map_err(|e| format!("failed to parse Hugging Face search response: {e}"))?;
+        .map_err(|e| format!("failed to parse Hugging Face search response: {e}"))
+}
 
-    let models = models
-        .as_array()
-        .ok_or_else(|| "Hugging Face search returned an unexpected response".to_string())?;
+fn whisper_models_from_repo(model: &serde_json::Value, query: &str) -> Vec<WhisperModelSummary> {
     let mut candidates = Vec::new();
-    for model in models {
-        let Some(repo_id) = model
-            .get("id")
-            .or_else(|| model.get("modelId"))
-            .and_then(|value| value.as_str())
+    let Some(repo_id) = model
+        .get("id")
+        .or_else(|| model.get("modelId"))
+        .and_then(|value| value.as_str())
+    else {
+        return candidates;
+    };
+    let Some(siblings) = model.get("siblings").and_then(|value| value.as_array()) else {
+        return candidates;
+    };
+
+    for sibling in siblings {
+        let Some(remote_file_name) = sibling.get("rfilename").and_then(|value| value.as_str())
         else {
             continue;
         };
-        let Some(siblings) = model.get("siblings").and_then(|value| value.as_array()) else {
+        if !is_compatible_whisper_ggml_bin(remote_file_name) {
             continue;
-        };
-
-        for sibling in siblings {
-            let Some(remote_file_name) = sibling.get("rfilename").and_then(|value| value.as_str())
-            else {
-                continue;
-            };
-            if !is_compatible_whisper_ggml_bin(remote_file_name) {
-                continue;
-            }
-            let id = model_id_from_remote_file(remote_file_name);
-            let file_name = format!("{id}.bin");
-            let size_bytes = sibling.get("size").and_then(|value| value.as_u64());
-            candidates.push(WhisperModelSummary {
-                id,
-                name: model_name_from_file(remote_file_name),
-                file_name,
-                source: WhisperModelSource::HuggingFace,
-                url: Some(resolve_url(repo_id, remote_file_name)),
-                size_bytes,
-                size_label: size_bytes.map(format_size),
-                speed_hint: None,
-                accuracy_hint: None,
-                installed: false,
-                path: None,
-            });
         }
+        let id = model_id_from_remote_file(remote_file_name);
+        let file_name = format!("{id}.bin");
+        let name = model_name_from_file(remote_file_name);
+        if ![repo_id, remote_file_name, &name]
+            .iter()
+            .any(|value| value.to_lowercase().contains(&query.to_lowercase()))
+        {
+            continue;
+        }
+        let size_bytes = sibling.get("size").and_then(|value| value.as_u64());
+        candidates.push(WhisperModelSummary {
+            id,
+            name,
+            file_name,
+            source: WhisperModelSource::HuggingFace,
+            url: Some(resolve_url(repo_id, remote_file_name)),
+            size_bytes,
+            size_label: size_bytes.map(format_size),
+            installed: false,
+            path: None,
+        });
     }
-
-    candidates.sort_by(|a, b| a.name.cmp(&b.name));
-    candidates.dedup_by(|a, b| a.file_name == b.file_name);
-    Ok(candidates.into_iter().take(25).collect())
+    candidates
 }
 
 async fn download_to_temp(
@@ -387,71 +391,6 @@ async fn download_to_temp(
     Ok(())
 }
 
-fn curated_models() -> Vec<WhisperModelSummary> {
-    vec![
-        curated_model(
-            "large-v3-turbo-q5_0",
-            "Large v3 Turbo Q5",
-            "large-v3-turbo-q5_0.bin",
-            "ggml-large-v3-turbo-q5_0.bin",
-            Some(574_041_195),
-            "Balanced",
-            "Recommended",
-        ),
-        curated_model(
-            "base.en",
-            "Base English",
-            "base.en.bin",
-            "ggml-base.en.bin",
-            Some(147_964_211),
-            "Fastest",
-            "Basic English",
-        ),
-        curated_model(
-            "small.en",
-            "Small English",
-            "small.en.bin",
-            "ggml-small.en.bin",
-            Some(487_614_201),
-            "Fast",
-            "Good English",
-        ),
-        curated_model(
-            "medium.en",
-            "Medium English",
-            "medium.en.bin",
-            "ggml-medium.en.bin",
-            Some(1_533_774_781),
-            "Slower",
-            "Better English",
-        ),
-    ]
-}
-
-fn curated_model(
-    id: &str,
-    name: &str,
-    file_name: &str,
-    remote_file_name: &str,
-    size_bytes: Option<u64>,
-    speed_hint: &str,
-    accuracy_hint: &str,
-) -> WhisperModelSummary {
-    WhisperModelSummary {
-        id: id.to_string(),
-        name: name.to_string(),
-        file_name: file_name.to_string(),
-        source: WhisperModelSource::Curated,
-        url: Some(resolve_url(WHISPER_CPP_REPO, remote_file_name)),
-        size_bytes,
-        size_label: size_bytes.map(format_size),
-        speed_hint: Some(speed_hint.to_string()),
-        accuracy_hint: Some(accuracy_hint.to_string()),
-        installed: false,
-        path: None,
-    }
-}
-
 fn installed_models(cache_dir: &Path) -> Result<Vec<WhisperModelSummary>, String> {
     if !cache_dir.exists() {
         return Ok(Vec::new());
@@ -478,8 +417,6 @@ fn installed_models(cache_dir: &Path) -> Result<Vec<WhisperModelSummary>, String
             url: None,
             size_bytes,
             size_label: size_bytes.map(format_size),
-            speed_hint: None,
-            accuracy_hint: None,
             installed: true,
             path: Some(path.display().to_string()),
         });
@@ -675,18 +612,36 @@ mod tests {
     }
 
     #[test]
-    fn curated_list_contains_recommended_model() {
-        let models = curated_models();
-        let recommended = models
-            .iter()
-            .find(|model| model.id == RECOMMENDED_WHISPER_MODEL_ID)
-            .expect("recommended model should be present");
-        assert_eq!(recommended.file_name, "large-v3-turbo-q5_0.bin");
-        assert!(recommended
-            .url
-            .as_deref()
-            .unwrap_or_default()
-            .contains("ggml-large-v3-turbo-q5_0.bin"));
+    fn local_list_contains_only_installed_model_files() {
+        let cache = std::env::temp_dir().join(format!("yap-whisper-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&cache).unwrap();
+        assert!(installed_models(&cache).unwrap().is_empty());
+        fs::write(cache.join("example.bin"), b"model").unwrap();
+        fs::write(cache.join(".unfinished.download"), b"partial").unwrap();
+        let models = installed_models(&cache).unwrap();
+        fs::remove_dir_all(&cache).unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "example");
+        assert!(models[0].installed);
+        assert_eq!(models[0].size_bytes, Some(5));
+    }
+
+    #[test]
+    fn search_matches_actual_files_without_inventing_results() {
+        let repo = json!({
+            "id": "ggerganov/whisper.cpp",
+            "siblings": [
+                {"rfilename": "ggml-large-v3-turbo-q5_0.bin"},
+                {"rfilename": "ggml-base.en.bin"},
+                {"rfilename": "README.md"}
+            ]
+        });
+        let models = whisper_models_from_repo(&repo, "large-v3-turbo");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "large-v3-turbo-q5_0");
+        assert_eq!(models[0].url.as_deref(), Some("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"));
+        assert!(whisper_models_from_repo(&repo, "not-a-real-model").is_empty());
     }
 
     #[test]

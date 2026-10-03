@@ -122,11 +122,11 @@
   }
 
   .idea-pill.added svg {
-    color: var(--settings-primary);
+    color: var(--settings-primary-text);
   }
 
   .idea-pill:focus-visible {
-    outline: 2px solid var(--settings-primary);
+    outline: 2px solid var(--settings-primary-text);
     outline-offset: 2px;
   }
 </style>
