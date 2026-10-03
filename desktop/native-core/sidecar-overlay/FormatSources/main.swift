@@ -98,14 +98,7 @@ func format(_ request: FormatRequest) async throws -> String {
 
     let session = LanguageModelSession(model: model, instructions: request.prompt)
     let response = try await session.respond(
-        to: """
-        Transform this transcription according to the formatter instructions.
-        Return exactly one final transformed text in the text field.
-        Do not include both the original input and a transformed version.
-        Do not add headings, labels, examples, placeholder items, or extra sections unless the instructions explicitly ask for them.
-
-        <input>\(request.text)</input>
-        """,
+        to: text,
         generating: FormatOutput.self,
         options: GenerationOptions(sampling: .greedy, maximumResponseTokens: 2048)
     )

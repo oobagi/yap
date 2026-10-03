@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::formatting::{custom_formatter_prompt, FormattingStyle};
+use crate::model_output::{parse_gemini_response, text_schema};
 
 /// Transcription provider identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,7 +194,8 @@ async fn transcribe_gemini(
         "generationConfig": {
             "temperature": options.gemini_temperature,
             "maxOutputTokens": 2048,
-            "responseMimeType": "application/json"
+            "responseMimeType": "application/json",
+            "responseJsonSchema": text_schema()
         }
     });
 
@@ -232,22 +234,7 @@ async fn transcribe_gemini(
         let json: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| (format!("Gemini parse failed: {e}"), true))?;
 
-        // Check finishReason -- anything other than STOP means truncated/blocked
-        let finish_reason = json["candidates"][0]["finishReason"]
-            .as_str()
-            .unwrap_or("UNKNOWN");
-        if finish_reason != "STOP" {
-            return Err((
-                format!("Gemini finishReason: {finish_reason} (expected STOP)"),
-                true,
-            ));
-        }
-
-        let response_text = json["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .ok_or_else(|| ("Gemini response missing text content".to_string(), true))?;
-
-        Ok(extract_json(response_text))
+        parse_gemini_response(&json).map_err(|error| (error, false))
     })
     .await
 }
@@ -519,50 +506,6 @@ where
 /// Check if a reqwest error is retryable (timeout or connection issue).
 fn is_retryable_error(e: &reqwest::Error) -> bool {
     e.is_timeout() || e.is_connect() || e.is_request()
-}
-
-// ---------------------------------------------------------------------------
-// JSON extraction helper
-// ---------------------------------------------------------------------------
-
-/// Extract the "text" field from a JSON response string.
-/// Handles markdown code fences and searches for `{"text": "..."}` patterns.
-pub fn extract_json(text: &str) -> String {
-    let mut s = text.trim().to_string();
-
-    // Strip markdown code fences
-    if s.starts_with("```json") {
-        s = s[7..].to_string();
-    } else if s.starts_with("```") {
-        s = s[3..].to_string();
-    }
-    if s.ends_with("```") {
-        s = s[..s.len() - 3].to_string();
-    }
-    s = s.trim().to_string();
-
-    // Try direct JSON parse
-    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&s) {
-        if let Some(text_val) = json["text"].as_str() {
-            return text_val.to_string();
-        }
-    }
-
-    // Try to find JSON object anywhere in the string
-    if let Some(start) = s.find('{') {
-        if let Some(end) = s.rfind('}') {
-            if end > start {
-                let json_slice = &s[start..=end];
-                if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_slice) {
-                    if let Some(text_val) = json["text"].as_str() {
-                        return text_val.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    s
 }
 
 // ---------------------------------------------------------------------------
