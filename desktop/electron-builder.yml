@@ -41,6 +41,7 @@ mac:
     - dmg
     - zip
 win:
+  artifactName: ${productName}-Setup-${version}.${ext}
   icon: native-core/icons/icon.ico
   target:
     - nsis
