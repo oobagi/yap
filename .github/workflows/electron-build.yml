@@ -70,6 +70,10 @@ jobs:
         working-directory: desktop
         run: pnpm run electron:check
 
+      - name: Test macOS signing password handling
+        working-directory: desktop
+        run: pnpm run electron:test-signing
+
       - name: Test native runtime
         working-directory: desktop
         run: cargo test --locked --manifest-path native-core/Cargo.toml --lib

@@ -21,7 +21,8 @@
     "electron:package": "pnpm run electron:build && pnpm run electron:build-core && pnpm run electron:build-sidecar && electron-builder --config electron-builder.yml",
     "electron:package:ci": "pnpm run electron:build && pnpm run electron:build-core && pnpm run electron:build-sidecar && electron-builder --config electron-builder.yml --publish never",
     "electron:verify-mac-entitlements": "node scripts/verify-mac-entitlements.mjs",
-    "electron:check": "tsc --noEmit --project tsconfig.electron.json"
+    "electron:check": "tsc --noEmit --project tsconfig.electron.json",
+    "electron:test-signing": "node --test scripts/mac-signing.test.mjs"
   },
   "license": "MIT",
   "dependencies": {
@@ -35,7 +36,10 @@
       "electron",
       "electron-winstaller",
       "esbuild"
-    ]
+    ],
+    "patchedDependencies": {
+      "app-builder-lib@26.8.1": "patches/app-builder-lib@26.8.1.patch"
+    }
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",
