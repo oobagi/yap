@@ -11,6 +11,7 @@ mod hotkey;
 mod local_whisper;
 mod log;
 pub mod model_manager;
+mod model_output;
 pub mod ollama;
 mod paste;
 mod sidecar;

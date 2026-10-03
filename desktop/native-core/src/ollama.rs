@@ -137,28 +137,7 @@ pub async fn format_text(
 ) -> Result<String, String> {
     let model = sanitize_model_id(model)?;
     let client = ollama_client(timeout)?;
-    let body = json!({
-        "model": model,
-        "messages": [
-            { "role": "system", "content": prompt },
-            { "role": "user", "content": format!("<input>{text}</input>") }
-        ],
-        "format": {
-            "type": "object",
-            "properties": {
-                "text": { "type": "string" }
-            },
-            "required": ["text"],
-            "additionalProperties": false
-        },
-        "options": {
-            "temperature": 0.0,
-            "num_predict": 2048
-        },
-        "think": false,
-        "stream": false,
-        "keep_alive": "5m"
-    });
+    let body = format_request(text, prompt, &model);
 
     let resp = client
         .post(format!("{}/api/chat", ollama_base_url()))
@@ -188,21 +167,36 @@ pub async fn format_text(
     parse_format_response(&json)
 }
 
+fn format_request(text: &str, prompt: &str, model: &str) -> serde_json::Value {
+    json!({
+        "model": model,
+        "messages": [
+            { "role": "system", "content": prompt },
+            { "role": "user", "content": text }
+        ],
+        "format": crate::model_output::text_schema(),
+        "options": {
+            "temperature": 0.0,
+            "num_predict": 2048
+        },
+        "think": false,
+        "stream": false,
+        "keep_alive": "5m"
+    })
+}
+
 fn parse_format_response(json: &serde_json::Value) -> Result<String, String> {
-    if json["done_reason"].as_str() == Some("length") || json["done"].as_bool() == Some(false) {
+    if json["done_reason"].as_str() != Some("stop") || json["done"].as_bool() != Some(true) {
         return Err("Ollama formatter returned incomplete text".to_string());
     }
     let content = json["message"]["content"]
         .as_str()
         .ok_or_else(|| "Ollama format response missing content".to_string())?;
-    let output: serde_json::Value = serde_json::from_str(content)
-        .map_err(|error| format!("Ollama formatter returned invalid JSON: {error}"))?;
-    output["text"]
-        .as_str()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| "Ollama formatter returned empty or missing text".to_string())
+    let text = crate::model_output::parse_text(content)?;
+    if text.trim().is_empty() {
+        return Err("Ollama formatter returned empty text".into());
+    }
+    Ok(text.trim().to_string())
 }
 
 pub fn list_ollama_models() -> Result<OllamaModelList, String> {
@@ -915,9 +909,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn formatter_sends_unwrapped_transcript_with_a_text_schema() {
+        for text in ["Hello.", "<input>Hello.</input>"] {
+            let body = format_request(text, "Format as JSON", "qwen3.5:4b");
+            assert_eq!(body["messages"][0]["content"], "Format as JSON");
+            assert_eq!(body["messages"][1]["content"], text);
+            assert_eq!(body["format"], crate::model_output::text_schema());
+        }
+    }
+
+    #[test]
     fn formatting_rejects_truncated_or_malformed_output() {
         let response = json!({"done": true, "done_reason": "stop", "message": {"content": "{\"text\":\"Hello.\"}"}});
         assert_eq!(parse_format_response(&response).unwrap(), "Hello.");
+        for content in [
+            "<input>Hello.</input>",
+            "{\"text\":\"Hello.\",\"reasoning\":\"Thinking\"}",
+            "{\"text\":\"\"}",
+            "{\"text\":\"unfinished",
+        ] {
+            let response =
+                json!({"done": true, "done_reason": "stop", "message": {"content": content}});
+            assert!(parse_format_response(&response).is_err());
+        }
         for response in [
             json!({"done_reason": "length", "message": {"content": "{\"text\":\"Partial\"}"}}),
             json!({"done": false, "message": {"content": "{\"text\":\"Partial\"}"}}),
