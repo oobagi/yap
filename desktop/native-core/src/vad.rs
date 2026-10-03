@@ -153,6 +153,7 @@ fn analyze_samples(samples: &[f32], sample_rate: u32) -> Result<SpeechActivity, 
     };
 
     high_pass_filter(&mut vad_samples, TARGET_SAMPLE_RATE, HIGH_PASS_HZ);
+    normalize_vad_input(&mut vad_samples);
 
     let processed_frames = vad_samples.len() / VAD_FRAME_LEN;
     if processed_frames == 0 {
@@ -248,6 +249,16 @@ fn high_pass_filter(samples: &mut [f32], sample_rate: u32, cutoff_hz: f32) {
     }
 }
 
+fn normalize_vad_input(samples: &mut [f32]) {
+    for sample in samples {
+        *sample = if sample.is_finite() {
+            sample.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+    }
+}
+
 fn frame_stats(frame: &[f32]) -> FrameStats {
     let mut sum_sq = 0.0;
     let mut peak = 0.0;
@@ -312,6 +323,18 @@ mod tests {
         let activity = analyze_samples(&samples, 44_100).unwrap();
 
         assert!(!activity.has_speech());
+    }
+
+    #[test]
+    fn clamps_samples_before_earshot() {
+        let mut samples = vec![0.0; SAMPLE_RATE as usize];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            *sample = if index % 2 == 0 { -1.2 } else { 1.2 };
+        }
+
+        let activity = analyze_samples(&samples, SAMPLE_RATE).unwrap();
+
+        assert!(activity.processed_frames > 0);
     }
 
     fn sine_wave(freq: f32, amp: f32, duration_ms: u32) -> Vec<f32> {
