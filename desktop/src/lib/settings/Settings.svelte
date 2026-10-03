@@ -15,6 +15,7 @@
 
   import './settings.css';
   import { onDestroy } from 'svelte';
+  import CustomInstructions from './CustomInstructions.svelte';
   import {
     checkForRuntimeUpdate,
     confirmRuntime,
@@ -2344,18 +2345,7 @@
                 </div>
 
                 {#if fmtStyle === 'custom'}
-                  <div class="field-row">
-                    <span class="field-label">Custom instructions</span>
-                    <textarea
-                      class="input textarea"
-                      placeholder="e.g. Make the result concise and use bullet points when useful."
-                      bind:value={fmtCustomPrompt}
-                      rows="4"
-                    ></textarea>
-                    <span class="field-description">
-                      Used as the primary formatting instruction.
-                    </span>
-                  </div>
+                  <CustomInstructions bind:value={fmtCustomPrompt} />
                 {/if}
 
                 {#if fmtStyle !== 'custom'}
